@@ -1,5 +1,5 @@
 {
-  "license": "ISC",  
+  "license": "ISC",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
@@ -16,5 +16,14 @@
     "@types/mocha": "^9.0.0",
     "typescript": "^4.3.5",
     "prettier": "^2.6.2"
-  }
+  },
+  "name": "solnado",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "keywords": [],
+  "author": "",
+  "description": ""
 }
