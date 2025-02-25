@@ -13,4 +13,13 @@ pub enum ErrorCode {
 
     #[msg("Nullifier already used.")]
     NullifierAlreadyUsed,
+
+    #[msg("Invalid inputs")]
+    InvalidInputs,
+
+    #[msg("Invalid hash")]
+    InvalidHash,
+
+    #[msg("Invalid argument")]
+    InvalidArgument
 }
