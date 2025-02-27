@@ -28,18 +28,22 @@ declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
 #[program]
 pub mod solnado {
 
+    use crate::error::ErrorCode;
+
     use super::*;
 
     pub fn initialize_pool(ctx: Context<InitializePool>, identifier: u64) -> Result<()> {
         let nullifier_list = &mut ctx.accounts.nullifier_list;
         let pool = &mut ctx.accounts.pool;
-        nullifier_list.nullifier_list = [[0; 32]; 16];
-        let leaves = [DEFAULT_LEAF_HASH; 16];
+
+        nullifier_list.identifier = identifier;
+        nullifier_list.nullifier_list = default_nullifier_list();
+        msg!("Nullifier list initialized");
+
         pool.identifier = identifier;
-        pool.leaves = leaves;
-        pool.merkle_root = get_root(&leaves);
+        pool.leaves = default_leaves();
+        pool.merkle_root = get_root(&pool.leaves);
         msg!("Pool initialized with {:?} as root", pool.merkle_root);
-        msg!("nullifier list initialized");
         Ok(())
     }
 
@@ -73,7 +77,7 @@ pub mod solnado {
         proof: [u8; 256], // Real proof (a,b and c)
         public_inputs: [u8; 64] //root & nullifier hash
     ) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
+        let pool = &ctx.accounts.pool;
         let nullifier_list = &mut ctx.accounts.nullifier_list;
         let withdrawer = &mut ctx.accounts.withdrawer;
         let system_program = &ctx.accounts.system_program;
@@ -94,6 +98,9 @@ pub mod solnado {
             msg!("Public input root: {:?}", public_input_root);
             msg!("Tree root is {:?}", pool.merkle_root);
             return Err(ErrorCode::InvalidPublicInputRoot.into())
+        }
+        if pool.identifier != nullifier_list.identifier{
+            return Err(ErrorCode::InvalidNullifierList.into())
         }
 
         if nullifier_list.nullifier_list.contains(nullifier_hash) {
@@ -137,18 +144,20 @@ pub mod solnado {
             &[bump]
         ];
         //PDA needs seeds
+        **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += amount;
 
         // Invoke the system program transfer (signed because of PDA)
-        invoke_signed(
-            &transfer_instruction,
-            &[
-                pool.to_account_info().clone(),
-                withdrawer.to_account_info(),
-                system_program.to_account_info(),
-            ],
-            &[seeds]
-        )?;
-        "Succesfully transfered 0.1 SOL to withdrawer!";
+        // invoke_signed(
+        //     &transfer_instruction,
+        //     &[
+        //         pool.to_account_info().clone(),
+        //         withdrawer.to_account_info(),
+        //         system_program.to_account_info(),
+        //     ],
+        //     &[seeds]
+        // )?;
+        // "Succesfully transfered 0.1 SOL to withdrawer!";
 
         Ok(())
     }

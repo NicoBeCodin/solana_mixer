@@ -1,3 +1,4 @@
+use crate::{LEAVES_LENGTH, NULLIFIER_LIST_LENGTH, DEFAULT_LEAF};
 use crate::ErrorCode::*;
 use anchor_lang::prelude::*;
 use ark_ff::{  FromBytes, ToBytes };
@@ -10,6 +11,7 @@ use std::ops::Neg;
 type G1 = ark_bn254::G1Affine;
 
 pub type LeavesArray = [[u8; 32]; 16];
+pub type NullifierArray = [[u8;32];16];
 
 pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
     let mut nodes = leaves.to_vec();
@@ -56,6 +58,15 @@ fn change_endianness(bytes: &[u8]) -> Vec<u8> {
     vec
 }
 
+pub fn default_leaves()->LeavesArray{
+    let default_leaves_array: LeavesArray = [DEFAULT_LEAF_HASH; LEAVES_LENGTH];
+    default_leaves_array
+}   
+pub fn default_nullifier_list()->NullifierArray{
+    let default_nullifier_array: NullifierArray = [DEFAULT_LEAF; NULLIFIER_LIST_LENGTH];
+    default_nullifier_array
+}
+
 
 pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     // Ensure public inputs are a multiple of 32 bytes
@@ -71,11 +82,8 @@ pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
         .expect("Failed public_input_nullifier parsing");
 
     
-
     let public_inputs_array: &[[u8; 32]; 2] = &[public_input_nullifier,public_input_root];
-
     let vk: Groth16Verifyingkey = VERIFYINGKEY;
-
     let proof_a: G1 = <G1 as FromBytes>
         ::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
         .unwrap();

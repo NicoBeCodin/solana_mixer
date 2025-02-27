@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 use crate::error::ErrorCode;
-use crate::{DEFAULT_LEAF, DEFAULT_LEAF_HASH, LEAVES_LENGTH, TREE_DEPTH, NULLIFIER_LIST_LENGTH};
-use crate::ErrorCode::TreeIsFull;
+use crate::utils::LeavesArray;
+use crate::{DEFAULT_LEAF, DEFAULT_LEAF_HASH, LEAVES_LENGTH, NULLIFIER_LIST_LENGTH};
+
 
 
 #[derive(Accounts)]
@@ -66,7 +67,7 @@ pub struct Pool {
     pub merkle_root: [u8; 32],  
 
     /// Leaves array of size 8
-    pub leaves: [[u8; 32]; 16],
+    pub leaves: LeavesArray,
 
     // Set of used nullifiers to prevent double-withdraw
     // pub used_nullifiers:  [[u8; 32]; 16],

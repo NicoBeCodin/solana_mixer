@@ -29,5 +29,6 @@ pub enum ErrorCode {
     #[msg("Invalid public input root")]
     InvalidPublicInputRoot,
 
-    
+    #[msg("Invalid nullifier list")]
+    InvalidNullifierList,
 }
