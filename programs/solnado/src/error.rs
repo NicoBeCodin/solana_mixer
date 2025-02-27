@@ -5,8 +5,11 @@ use anchor_lang::prelude::*;
 //
 #[error_code]
 pub enum ErrorCode {
-    #[msg("The merkle tree is already full (8 leaves).")]
+    #[msg("The merkle tree is already full .")]
     TreeIsFull,
+
+    #[msg("The nullifier list is full")]
+    NullifierListIsFull,
 
     #[msg("The ZK proof is invalid.")]
     InvalidProof,
@@ -21,5 +24,10 @@ pub enum ErrorCode {
     InvalidHash,
 
     #[msg("Invalid argument")]
-    InvalidArgument
+    InvalidArgument,
+
+    #[msg("Invalid public input root")]
+    InvalidPublicInputRoot,
+
+    
 }
