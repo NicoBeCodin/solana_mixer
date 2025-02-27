@@ -7,7 +7,6 @@ use crate::error::ErrorCode;
 use crate::state::*;
 use crate::utils::*;
 use anchor_lang::solana_program::{ program::invoke, system_instruction };
-use solana_program::program::invoke_signed;
 
 
 pub const DEFAULT_LEAF: [u8; 32] = [0u8; 32];
@@ -79,7 +78,6 @@ pub mod solnado {
     ) -> Result<()> {
         let pool = &ctx.accounts.pool;
         let nullifier_list = &mut ctx.accounts.nullifier_list;
-        let withdrawer = &mut ctx.accounts.withdrawer;
         let system_program = &ctx.accounts.system_program;
 
         if proof.len() != 256 {
@@ -128,37 +126,12 @@ pub mod solnado {
         msg!("Added {:?} to nullifier list", nullifier_hash);
 
         let amount = FIXED_DEPOSIT_AMOUNT; // 0.1 SOL
-
-        // Create the system program transfer instruction
-        let transfer_instruction = system_instruction::transfer(
-            &pool.key(), // Sender (pool account)
-            &withdrawer.key(), // Receiver (withdrawer)
-            amount // Amount to transfer
-        );
         
         let (_, bump) = Pubkey::find_program_address(&[b"pool_merkle", &pool.identifier.to_le_bytes()], &id());
         msg!("derived bump: {}", bump);
-        let seeds: &[&[u8]] = &[
-            b"pool_merkle",
-            &pool.identifier.to_le_bytes(),
-            &[bump]
-        ];
-        //PDA needs seeds
+        
         **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= amount;
         **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += amount;
-
-        // Invoke the system program transfer (signed because of PDA)
-        // invoke_signed(
-        //     &transfer_instruction,
-        //     &[
-        //         pool.to_account_info().clone(),
-        //         withdrawer.to_account_info(),
-        //         system_program.to_account_info(),
-        //     ],
-        //     &[seeds]
-        // )?;
-        // "Succesfully transfered 0.1 SOL to withdrawer!";
-
         Ok(())
     }
 }
