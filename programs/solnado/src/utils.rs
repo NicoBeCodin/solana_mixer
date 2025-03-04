@@ -1,3 +1,4 @@
+use crate::error::ErrorCode;
 use crate::{LEAVES_LENGTH, NULLIFIER_LIST_LENGTH, DEFAULT_LEAF};
 use crate::ErrorCode::*;
 use anchor_lang::prelude::*;
@@ -9,6 +10,7 @@ use groth16_solana::groth16::{ Groth16Verifier, Groth16Verifyingkey };
 use crate::verifying_key::*;
 use std::ops::Neg;
 type G1 = ark_bn254::G1Affine;
+
 
 pub type LeavesArray = [[u8; 32]; 16];
 pub type NullifierArray = [[u8;32];16];
@@ -72,7 +74,7 @@ pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     // Ensure public inputs are a multiple of 32 bytes
     if public_inputs.len() % 32 != 0 {
         msg!("Invalid public inputs length");
-        return Err(crate::ErrorCode::InvalidArgument.into());
+        return Err(ErrorCode::InvalidArgument.into());
     }
     let public_input_root: [u8; 32] = public_inputs[32..64]
         .try_into()

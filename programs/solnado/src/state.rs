@@ -49,8 +49,10 @@ pub struct Deposit<'info> {
 pub struct Withdraw<'info> {
     #[account(mut)]
     pub pool: Account<'info, Pool>,
+
+    ///CHECK: Will serve to check if nullifier has already been used
     #[account(mut)]
-    pub nullifier_list: Account<'info, NullifierList>,
+    pub nullifier_account: AccountInfo<'info>,
 
     #[account(mut)]
     pub withdrawer: Signer<'info>,
@@ -67,10 +69,9 @@ pub struct Pool {
     pub merkle_root: [u8; 32],  
 
     /// Leaves array of size 8
-    pub leaves: LeavesArray,
+    pub leaves: [[u8;32];16],
 
     // Set of used nullifiers to prevent double-withdraw
-    // pub used_nullifiers:  [[u8; 32]; 16],
     pub identifier: u64,
     }
 

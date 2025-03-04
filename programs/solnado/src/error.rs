@@ -31,4 +31,7 @@ pub enum ErrorCode {
 
     #[msg("Invalid nullifier list")]
     InvalidNullifierList,
+
+    #[msg("Invalid nullifier account")]
+    InvalidNullifierAccount,
 }

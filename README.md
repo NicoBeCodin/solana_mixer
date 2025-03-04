@@ -4,6 +4,15 @@
 Solana Mixer is a privacy-preserving transaction system implemented on Solana using Anchor and zk-SNARKs. It allows users to deposit fixed amounts of SOL into a shielded pool and later withdraw them anonymously by proving ownership of deposited funds via zero-knowledge proofs. 
 To interact with this program, look at the solana_mixer_cli on my github page.
 
+## What's next
+Ideas: 
+Instead of a nullifier list, Initializing a pda with nullifier_hash as seed could be a solution, but a costly one        
+Maybe the light protocol can allow for cheaper account creation
+Have one root account that can store the current account where the most recent tree is being modified and 
+then when a tree is full, it's stored in a ZK compressed state, where it will no longer be updated.
+ 
+
+
 ## Features
 - **Zero-Knowledge Proofs**: Uses Groth16 zk-SNARKs for anonymous withdrawals.
 - **Merkle Tree Commitments**: Deposits are stored in a Merkle tree to prove membership efficiently.

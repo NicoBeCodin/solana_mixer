@@ -6,8 +6,7 @@ pub mod verifying_key;
 use crate::error::ErrorCode;
 use crate::state::*;
 use crate::utils::*;
-use anchor_lang::solana_program::{ program::invoke, system_instruction };
-
+use anchor_lang::solana_program::{ program::{ invoke, invoke_signed }, system_instruction };
 
 pub const DEFAULT_LEAF: [u8; 32] = [0u8; 32];
 pub const TREE_DEPTH: u8 = 4;
@@ -26,7 +25,6 @@ declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
 
 #[program]
 pub mod solnado {
-
     use crate::error::ErrorCode;
 
     use super::*;
@@ -77,7 +75,6 @@ pub mod solnado {
         public_inputs: [u8; 64] //root & nullifier hash
     ) -> Result<()> {
         let pool = &ctx.accounts.pool;
-        let nullifier_list = &mut ctx.accounts.nullifier_list;
         let system_program = &ctx.accounts.system_program;
 
         if proof.len() != 256 {
@@ -86,24 +83,64 @@ pub mod solnado {
         }
 
         //It's the opposite, the first 32 are the nullifier and the rest the root
+        let nullifier_hash: &[u8; 32] = public_inputs[0..32]
+            .try_into()
+            .expect("Failed converting nullifier to hash");
         let public_input_root: [u8; 32] = public_inputs[32..64]
             .try_into()
             .expect("Failed converting the public_input root");
-        let nullifier_hash = public_inputs[0..32]
-            .try_into()
-            .expect("Failed converting nullifier to hash");
+
+        let (nullifier_pda, bump) = Pubkey::find_program_address(
+            &[nullifier_hash.as_ref()],
+            ctx.program_id
+        );
+        let nullifier_account = &ctx.accounts.nullifier_account;
+        if &nullifier_pda != nullifier_account.key {
+            msg!("The provided nullifier account and nullifier derived pda do not match.");
+            return Err(ErrorCode::InvalidNullifierAccount.into());
+        }
+
+        if nullifier_account.lamports() != 0 {
+            msg!("The nullifier account balance is not zero, it has already been initialized");
+            return Err(ErrorCode::NullifierAlreadyUsed.into());
+        }
+
+        // Otherwise, create the account.
+        // (Assume a minimal account size of 8 bytes; adjust as needed.)
+        let rent = Rent::get()?;
+        let space = 8;
+        let lamports = rent.minimum_balance(space);
+        let create_ix = system_instruction::create_account(
+            &ctx.accounts.withdrawer.key(), // payer
+            &nullifier_pda, // new account address
+            lamports,
+            space as u64,
+            ctx.program_id // owner: our program
+        );
+        let seeds = &[nullifier_hash.as_ref(), &[bump]];
+        invoke_signed(
+            &create_ix,
+            &[
+                ctx.accounts.withdrawer.to_account_info(),
+                nullifier_account.clone(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            &[seeds]
+        )?;
+
         if pool.merkle_root != public_input_root {
             msg!("Public input root: {:?}", public_input_root);
             msg!("Tree root is {:?}", pool.merkle_root);
-            return Err(ErrorCode::InvalidPublicInputRoot.into())
-        }
-        if pool.identifier != nullifier_list.identifier{
-            return Err(ErrorCode::InvalidNullifierList.into())
+            return Err(ErrorCode::InvalidPublicInputRoot.into());
         }
 
-        if nullifier_list.nullifier_list.contains(nullifier_hash) {
-            return Err(ErrorCode::NullifierAlreadyUsed.into());
-        }
+        // if pool.identifier != nullifier_list.identifier {
+        //     return Err(ErrorCode::InvalidNullifierList.into());
+        // }
+
+        // if nullifier_list.nullifier_list.contains(nullifier_hash) {
+        //     return Err(ErrorCode::NullifierAlreadyUsed.into());
+        // }
 
         let current_root = &pool.merkle_root;
         // let root_as_bigint = Bn254Fr::from_be_bytes_mod_order(current_root);
@@ -121,15 +158,18 @@ pub mod solnado {
         msg!("Proof verified successfuly");
 
         //Add nullifier hash to nullifier list
-        let index = nullifier_list.get_free_nullifier()?;
-        nullifier_list.nullifier_list[index] = *nullifier_hash;
-        msg!("Added {:?} to nullifier list", nullifier_hash);
+        // let index = nullifier_list.get_free_nullifier()?;
+        // nullifier_list.nullifier_list[index] = *nullifier_hash;
+        // msg!("Added {:?} to nullifier list", nullifier_hash);
 
         let amount = FIXED_DEPOSIT_AMOUNT; // 0.1 SOL
-        
-        let (_, bump) = Pubkey::find_program_address(&[b"pool_merkle", &pool.identifier.to_le_bytes()], &id());
-        msg!("derived bump: {}", bump);
-        
+
+        // let (_, bump) = Pubkey::find_program_address(
+        //     &[b"pool_merkle", &pool.identifier.to_le_bytes()],
+        //     &id()
+        // );
+        // msg!("derived bump: {}", bump);
+
         **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= amount;
         **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += amount;
         Ok(())
