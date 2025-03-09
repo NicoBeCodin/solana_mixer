@@ -13,7 +13,6 @@ type G1 = ark_bn254::G1Affine;
 
 
 pub type LeavesArray = [[u8; 32]; 16];
-pub type NullifierArray = [[u8;32];16];
 
 pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
     let mut nodes = leaves.to_vec();
@@ -61,14 +60,10 @@ fn change_endianness(bytes: &[u8]) -> Vec<u8> {
 }
 
 pub fn default_leaves()->LeavesArray{
-    let default_leaves_array: LeavesArray = [DEFAULT_LEAF_HASH; LEAVES_LENGTH];
+    let default_leaves_array: LeavesArray = [DEFAULT_LEAF; LEAVES_LENGTH];
     default_leaves_array
 }   
-pub fn default_nullifier_list()->NullifierArray{
-    let default_nullifier_array: NullifierArray = [DEFAULT_LEAF; NULLIFIER_LIST_LENGTH];
-    default_nullifier_array
-}
-
+    
 
 pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     // Ensure public inputs are a multiple of 32 bytes
@@ -106,3 +101,6 @@ pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     let res = verifier.verify().unwrap();
     Ok(res)
 }
+
+
+

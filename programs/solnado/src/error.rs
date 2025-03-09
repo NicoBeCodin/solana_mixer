@@ -34,4 +34,13 @@ pub enum ErrorCode {
 
     #[msg("Invalid nullifier account")]
     InvalidNullifierAccount,
+
+    #[msg("Inputed wrong program id")]
+    WrongProgramId,
+
+    #[msg("Invalid store batch account")]
+    InvalidStoreBatchAccount,
+
+    #[msg("Inavlid pool account")]
+    InvalidPoolAccount,
 }
