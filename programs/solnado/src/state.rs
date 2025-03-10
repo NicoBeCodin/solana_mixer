@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::error::ErrorCode;
 use crate::utils::LeavesArray;
-use crate::{DEFAULT_LEAF, DEFAULT_LEAF_HASH, LEAVES_LENGTH, NULLIFIER_LIST_LENGTH};
+use crate::{DEFAULT_LEAF, LEAVES_LENGTH, NULLIFIER_LIST_LENGTH, TARGET_DEPTH};
 use solana_poseidon::{Parameters, hashv, Endianness};
 
 #[derive(Accounts)]
@@ -86,6 +86,7 @@ pub struct Pool {
     pub peaks: [[u8;32]; 16], //Peaks to build merkle tree without storing everything
     pub depth: [u8; 16], //With each peak with associate a depth
     pub number_of_peaks: u8,
+
     }
 
 impl Pool {
@@ -169,31 +170,6 @@ impl Pool {
         msg!("number of peaks after update: {}", self.number_of_peaks);
     }
     
-    // pub fn compute_root_from_peaks(&self) -> [u8;32] {
-    //     let mut nodes: Vec<[u8;32]> = self.peaks[..(self.number_of_peaks as usize)].to_vec();
-    //     while nodes.len() > 1 {
-    //         let mut next_level = Vec::with_capacity((nodes.len() + 1) / 2);
-    //         let mut i = 0;
-    //         while i < nodes.len() {
-    //             if i + 1 < nodes.len() {
-    //                 let merged = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&nodes[i], &nodes[i+1]])
-    //                     .unwrap()
-    //                     .to_bytes();
-    //                 next_level.push(merged);
-    //             } else {
-    //                 // No sibling; duplicate the last node.
-    //                 let merged = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&nodes[i], &nodes[i]])
-    //                     .unwrap()
-    //                     .to_bytes();
-    //                 next_level.push(merged);
-    //             }
-    //             i += 2;
-    //         }
-    //         nodes = next_level;
-    //     }
-    //     nodes[0]
-    // }
-    //Padding with default leaves
     pub fn compute_root_from_peaks(&self) -> [u8;32] {
         let mut nodes: Vec<[u8;32]> = self.peaks[..(self.number_of_peaks as usize)].to_vec();
         let mut depth = 4; // Default depth for a batch
@@ -224,6 +200,22 @@ impl Pool {
         }
         nodes[0]
     }
+    //this method allows 
+    pub fn deepen(&self, current_depth: usize, wanted_depth: usize) -> [u8;32] {
+        let mut default_hash = get_default_root_depth(current_depth);
+        let mut hashed = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&self.whole_tree_root, &default_hash])
+        .unwrap()
+        .to_bytes();
+    let range = current_depth+1..wanted_depth;
+        for x in range {
+           default_hash = get_default_root_depth(x);
+           hashed = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&hashed, &default_hash])
+           .unwrap()
+           .to_bytes();
+        }
+        hashed
+    }
+
 }
 
 pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
@@ -239,8 +231,9 @@ pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
         )
             .unwrap()
             .to_bytes();
-        i+=1;
-        msg!("Depth {} hash {:?}", i, parent_hash);
+        i+=1;        
     }
     parent_hash
 }
+
+

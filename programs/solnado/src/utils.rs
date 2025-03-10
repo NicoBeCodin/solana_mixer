@@ -63,7 +63,17 @@ pub fn default_leaves()->LeavesArray{
     let default_leaves_array: LeavesArray = [DEFAULT_LEAF; LEAVES_LENGTH];
     default_leaves_array
 }   
+
+//to calculate the depth depending on batch size
+pub fn next_power_of_two_batch(n: usize)-> usize{
     
+    for i  in 1..99 {
+        if n*16 <= 2_usize.pow(i){
+            return i as usize;
+        }
+    }
+    return 99;
+}
 
 pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     // Ensure public inputs are a multiple of 32 bytes

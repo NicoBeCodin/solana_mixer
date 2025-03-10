@@ -21,14 +21,15 @@ pub const DEFAULT_LEAF_HASH: [u8; 32] = [
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.01) as u64; // 10_000_000 Low for testing purposes
 
+const TARGET_DEPTH: usize= 8; //This means pools are capped to 256
 declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
 
 /// Our fixed deposit of 0.1 SOL.
 
 #[program]
 pub mod solnado {
-    use crate::error::ErrorCode;
 
+    use crate::error::ErrorCode;
     use super::*;
 
     pub fn initialize_pool(ctx: Context<InitializePool>, identifier: u64) -> Result<()> {
@@ -137,9 +138,14 @@ pub mod solnado {
             pool.update_peaks(new_batch);
             pool.batch_number += 1;
             msg!("New batch number {}", pool.batch_number);
-            pool.whole_tree_root = pool.compute_root_from_peaks();
 
+            let new_root  = pool.compute_root_from_peaks();
+            let current_depth = next_power_of_two_batch(pool.batch_number as usize - 1 as usize);
+            pool.whole_tree_root = new_root;
             msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
+            let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
+            msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
+
             // Clear the pool leaves
             pool.leaves = default_leaves();
             // Add the new batch merkle root as the first leaf
@@ -180,8 +186,7 @@ pub mod solnado {
             msg!("Invalid proof length!");
             return Err(ErrorCode::InvalidArgument.into());
         }
-
-        //It's the opposite, the first 32 are the nullifier and the rest the root
+        
         let nullifier_hash: &[u8; 32] = public_inputs[0..32]
             .try_into()
             .expect("Failed converting nullifier to hash");
@@ -189,6 +194,7 @@ pub mod solnado {
             .try_into()
             .expect("Failed converting the public_input root");
 
+        //Nullifier pda creation to store nullifier hash
         let (nullifier_pda, bump) = Pubkey::find_program_address(
             &[nullifier_hash.as_ref()],
             ctx.program_id
@@ -226,15 +232,18 @@ pub mod solnado {
             ],
             &[seeds]
         )?;
-
-        if pool.merkle_root != public_input_root {
-            msg!("Public input root: {:?}", public_input_root);
-            msg!("Tree root is {:?}", pool.merkle_root);
+                
+        let depth = next_power_of_two_batch(pool.batch_number as usize - 1 as usize);
+        msg!("Current depth: {}",depth );
+        
+        //This allows to deepent he tree to match a certain size
+        let deepen_root = pool.deepen(depth, TARGET_DEPTH);
+        if deepen_root != public_input_root{
+            msg!("Deepened root isn't same as public_input_root");
+            msg!("Deepen root {:?}\n public_input_root {:?}",deepen_root, public_input_root);
             return Err(ErrorCode::InvalidPublicInputRoot.into());
         }
 
-        let current_root = &pool.merkle_root;
-        msg!("Current root : {:?}", current_root);
         msg!("Public input root: {:?}", public_input_root);
         msg!("Submitted nullifier hash: {:?}", nullifier_hash);
         msg!("Verifying proof...");
@@ -247,7 +256,7 @@ pub mod solnado {
         }
         msg!("Proof verified successfuly");
 
-        let amount = FIXED_DEPOSIT_AMOUNT; // 0.1 SOL
+        let amount = FIXED_DEPOSIT_AMOUNT; 
 
         **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= amount;
         **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += amount;
