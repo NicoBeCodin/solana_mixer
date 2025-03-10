@@ -13,6 +13,11 @@ type G1 = ark_bn254::G1Affine;
 
 
 pub type LeavesArray = [[u8; 32]; 16];
+//Other default hashes can be added to avoid calculation
+pub const DEPTH_FOUR: [u8;32] = [7, 249, 216, 55, 203, 23, 176, 211, 99, 32, 255, 233, 59, 165, 35, 69, 241, 183, 40, 87, 26, 86, 130, 101, 202, 172, 151, 85, 157, 188, 149, 42];
+pub const DEPTH_FIVE: [u8;32] = [43, 148, 207, 94, 135, 70, 179, 245, 201, 99, 31, 76, 93, 243, 41, 7, 166, 153, 197, 140, 148, 178, 173, 77, 123, 92, 236, 22, 57, 24, 63, 85];
+pub const DEPTH_SIX: [u8;32] = [45, 238, 147, 197, 166, 102, 69, 150, 70, 234, 125, 34, 204, 169, 225, 188, 254, 215, 30, 105, 81, 185, 83, 97, 29, 17, 221, 163, 46, 160, 157, 120];
+pub const DEPTH_SEVEN: [u8;32] = [7, 130, 149, 229, 162, 43, 132, 233, 130, 207, 96, 30, 182, 57, 89, 123, 139, 5, 21, 168, 140, 181, 172, 127, 168, 164, 170, 190, 60, 135, 52, 157];
 
 pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
     let mut nodes = leaves.to_vec();
@@ -74,6 +79,39 @@ pub fn next_power_of_two_batch(n: usize)-> usize{
     }
     return 99;
 }
+
+pub fn root_depth(depth: usize) -> [u8; 32] {
+    let mut parent_hash = DEFAULT_LEAF.clone();
+    
+    // Ensure the number of leaves is a power of two
+    let mut i = 0;
+    while i<depth{
+        parent_hash = hashv(
+            Parameters::Bn254X5,
+            Endianness::BigEndian,
+            &[&parent_hash, &parent_hash]
+        )
+            .unwrap()
+            .to_bytes();
+        i+=1;        
+    }
+    parent_hash
+}
+
+
+pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
+    
+    let hash = match depth {
+        4 => DEPTH_FOUR,
+        5=>DEPTH_FIVE,
+        6=>DEPTH_SIX,
+        7=>DEPTH_SEVEN,
+        _ => root_depth(depth),
+    };
+    hash
+}
+
+
 
 pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     // Ensure public inputs are a multiple of 32 bytes

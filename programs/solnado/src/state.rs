@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
 use crate::error::ErrorCode;
-use crate::utils::LeavesArray;
-use crate::{DEFAULT_LEAF, LEAVES_LENGTH, NULLIFIER_LIST_LENGTH, TARGET_DEPTH};
+use crate::{DEFAULT_LEAF, LEAVES_LENGTH,  TARGET_DEPTH};
 use solana_poseidon::{Parameters, hashv, Endianness};
+use crate::utils::get_default_root_depth;
 
 #[derive(Accounts)]
 #[instruction(identifier: u64)]
@@ -86,6 +86,7 @@ pub struct Pool {
     pub peaks: [[u8;32]; 16], //Peaks to build merkle tree without storing everything
     pub depth: [u8; 16], //With each peak with associate a depth
     pub number_of_peaks: u8,
+    pub max_leaves: u32, //MAX number of leaves in a pool
 
     }
 
@@ -217,23 +218,4 @@ impl Pool {
     }
 
 }
-
-pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
-    let mut parent_hash = DEFAULT_LEAF.clone();
-    
-    // Ensure the number of leaves is a power of two
-    let mut i = 0;
-    while i<depth{
-        parent_hash = hashv(
-            Parameters::Bn254X5,
-            Endianness::BigEndian,
-            &[&parent_hash, &parent_hash]
-        )
-            .unwrap()
-            .to_bytes();
-        i+=1;        
-    }
-    parent_hash
-}
-
 

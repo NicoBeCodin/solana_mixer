@@ -21,14 +21,13 @@ pub const DEFAULT_LEAF_HASH: [u8; 32] = [
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.01) as u64; // 10_000_000 Low for testing purposes
 
-const TARGET_DEPTH: usize= 8; //This means pools are capped to 256
+const TARGET_DEPTH: usize = 8; //This means pools are capped to 256
 declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
 
 /// Our fixed deposit of 0.1 SOL.
 
 #[program]
 pub mod solnado {
-
     use crate::error::ErrorCode;
     use super::*;
 
@@ -42,6 +41,7 @@ pub mod solnado {
         pool.depth = [0; 16];
         pool.number_of_peaks = 0;
         pool.peaks = [DEFAULT_LEAF; 16];
+        pool.max_leaves = (2_u32).pow(TARGET_DEPTH as u32) as u32;
         msg!("Pool initialized with {:?} as root", pool.merkle_root);
         msg!("This should correspond to {:?}", get_default_root_depth(4));
         Ok(())
@@ -52,7 +52,6 @@ pub mod solnado {
         let free = pool.find_first_match();
 
         if free <= 15 {
-            let start_index = free;
             let transfer_instruction = system_instruction::transfer(
                 &ctx.accounts.depositor.key(),
                 &ctx.accounts.pool.key(),
@@ -63,6 +62,7 @@ pub mod solnado {
                 &transfer_instruction,
                 &[ctx.accounts.depositor.to_account_info(), ctx.accounts.pool.to_account_info()]
             );
+            let start_index = free;
             msg!("Transfered {} lamports to pool", FIXED_DEPOSIT_AMOUNT);
             let pool = &mut ctx.accounts.pool;
             pool.leaves[start_index] = leaf_hash;
@@ -107,8 +107,7 @@ pub mod solnado {
             if store_batch.key != &store_batch_key {
                 return Err(ErrorCode::InvalidStoreBatchAccount.into());
             }
-            msg!("cpi_data length: {}", cpi_data.len());
-            msg!("cpi_data: {:?}", cpi_data);
+            msg!("CPI data length {}", cpi_data.len());
             // build_memo(&cpi_data, [pool_sol_key]);
             let store_batch_ix = anchor_lang::solana_program::instruction::Instruction {
                 program_id: *store_batch.key,
@@ -132,24 +131,44 @@ pub mod solnado {
                 &[signer_seeds]
             )?;
             msg!("Batch transaction created with calldata!");
-
-            // After CPI returns, reset the pool:
             let new_batch = get_root(leaves);
-            pool.update_peaks(new_batch);
-            pool.batch_number += 1;
-            msg!("New batch number {}", pool.batch_number);
+                pool.update_peaks(new_batch);
+                pool.batch_number += 1;
+                msg!("New batch number {}", pool.batch_number);
 
-            let new_root  = pool.compute_root_from_peaks();
-            let current_depth = next_power_of_two_batch(pool.batch_number as usize - 1 as usize);
-            pool.whole_tree_root = new_root;
-            msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
-            let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
-            msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
+                let new_root = pool.compute_root_from_peaks();
+                let current_depth = next_power_of_two_batch(
+                    (pool.batch_number as usize) - (1 as usize)
+                );
+                pool.whole_tree_root = new_root;
+                msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
+                let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
+                msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
 
-            // Clear the pool leaves
-            pool.leaves = default_leaves();
-            // Add the new batch merkle root as the first leaf
-            pool.merkle_root = get_root(&pool.leaves);
+                // Clear the pool leaves
+                pool.leaves = default_leaves();
+                // Add the new batch merkle root as the first leaf
+                pool.merkle_root = get_root(&pool.leaves);
+
+
+            //Check if pool is at max capacity
+            if (pool.max_leaves as u64) >= pool.batch_number * 16 {
+                let transfer_instruction = system_instruction::transfer(
+                    &ctx.accounts.depositor.key(),
+                    &pool.key(),
+                    FIXED_DEPOSIT_AMOUNT
+                );
+    
+                let _ = invoke(
+                    &transfer_instruction,
+                    &[ctx.accounts.depositor.to_account_info(), pool.to_account_info()]
+                );
+
+                // After CPI returns, reset the pool:
+                
+            } else {
+                msg!("The pool is at max capacity: {}, can't add new leaf as it would be unredeemable");
+            }
             Ok(())
         }
     }
@@ -186,7 +205,7 @@ pub mod solnado {
             msg!("Invalid proof length!");
             return Err(ErrorCode::InvalidArgument.into());
         }
-        
+
         let nullifier_hash: &[u8; 32] = public_inputs[0..32]
             .try_into()
             .expect("Failed converting nullifier to hash");
@@ -232,15 +251,15 @@ pub mod solnado {
             ],
             &[seeds]
         )?;
-                
-        let depth = next_power_of_two_batch(pool.batch_number as usize - 1 as usize);
-        msg!("Current depth: {}",depth );
-        
+
+        let depth = next_power_of_two_batch((pool.batch_number as usize) - (1 as usize));
+        msg!("Current depth: {}", depth);
+
         //This allows to deepent he tree to match a certain size
         let deepen_root = pool.deepen(depth, TARGET_DEPTH);
-        if deepen_root != public_input_root{
+        if deepen_root != public_input_root {
             msg!("Deepened root isn't same as public_input_root");
-            msg!("Deepen root {:?}\n public_input_root {:?}",deepen_root, public_input_root);
+            msg!("Deepen root {:?}\n public_input_root {:?}", deepen_root, public_input_root);
             return Err(ErrorCode::InvalidPublicInputRoot.into());
         }
 
@@ -256,7 +275,7 @@ pub mod solnado {
         }
         msg!("Proof verified successfuly");
 
-        let amount = FIXED_DEPOSIT_AMOUNT; 
+        let amount = FIXED_DEPOSIT_AMOUNT;
 
         **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= amount;
         **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += amount;
