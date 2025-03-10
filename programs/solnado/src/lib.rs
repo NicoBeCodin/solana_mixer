@@ -132,24 +132,21 @@ pub mod solnado {
             )?;
             msg!("Batch transaction created with calldata!");
             let new_batch = get_root(leaves);
-                pool.update_peaks(new_batch);
-                pool.batch_number += 1;
-                msg!("New batch number {}", pool.batch_number);
+            pool.update_peaks(new_batch);
+            pool.batch_number += 1;
+            msg!("New batch number {}", pool.batch_number);
 
-                let new_root = pool.compute_root_from_peaks();
-                let current_depth = next_power_of_two_batch(
-                    (pool.batch_number as usize) - (1 as usize)
-                );
-                pool.whole_tree_root = new_root;
-                msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
-                let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
-                msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
+            let new_root = pool.compute_root_from_peaks();
+            let current_depth = next_power_of_two_batch(pool.batch_number as usize);
+            pool.whole_tree_root = new_root;
+            msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
+            let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
+            msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
 
-                // Clear the pool leaves
-                pool.leaves = default_leaves();
-                // Add the new batch merkle root as the first leaf
-                pool.merkle_root = get_root(&pool.leaves);
-
+            // Clear the pool leaves
+            pool.leaves = default_leaves();
+            // Add the new batch merkle root as the first leaf
+            pool.merkle_root = get_root(&pool.leaves);
 
             //Check if pool is at max capacity
             if (pool.max_leaves as u64) >= pool.batch_number * 16 {
@@ -158,16 +155,17 @@ pub mod solnado {
                     &pool.key(),
                     FIXED_DEPOSIT_AMOUNT
                 );
-    
+
                 let _ = invoke(
                     &transfer_instruction,
                     &[ctx.accounts.depositor.to_account_info(), pool.to_account_info()]
                 );
 
                 // After CPI returns, reset the pool:
-                
             } else {
-                msg!("The pool is at max capacity: {}, can't add new leaf as it would be unredeemable");
+                msg!(
+                    "The pool is at max capacity: {}, can't add new leaf as it would be unredeemable"
+                );
             }
             Ok(())
         }
@@ -252,7 +250,7 @@ pub mod solnado {
             &[seeds]
         )?;
 
-        let depth = next_power_of_two_batch((pool.batch_number as usize) - (1 as usize));
+        let depth = next_power_of_two_batch(pool.batch_number as usize);
         msg!("Current depth: {}", depth);
 
         //This allows to deepent he tree to match a certain size

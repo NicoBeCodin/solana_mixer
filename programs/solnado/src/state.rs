@@ -216,6 +216,5 @@ impl Pool {
         }
         hashed
     }
-
 }
 

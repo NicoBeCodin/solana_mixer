@@ -112,7 +112,6 @@ pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
 }
 
 
-
 pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     // Ensure public inputs are a multiple of 32 bytes
     if public_inputs.len() % 32 != 0 {
