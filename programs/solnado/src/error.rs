@@ -41,6 +41,15 @@ pub enum ErrorCode {
     #[msg("Invalid store batch account")]
     InvalidStoreBatchAccount,
 
-    #[msg("Inavlid pool account")]
+    #[msg("Invalid pool account")]
     InvalidPoolAccount,
+
+    #[msg("Invalid User batch Number input")]
+    InvalidUserBatchNumber,
+
+    #[msg("Invalid user leaves batch")]
+    InvalidUserLeaves,
+
+    #[msg("Invalid Indexing error")]
+    InvalidIndexing,
 }

@@ -46,9 +46,7 @@ pub struct Deposit<'info> {
 
     #[account(mut)]
     pub depositor: Signer<'info>,
-    ///CHECK: The program itself
-    pub store_batch: AccountInfo<'info>,
-
+    
     pub system_program: Program<'info, System>,
 }
 
