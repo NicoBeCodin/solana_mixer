@@ -19,7 +19,7 @@ pub const DEFAULT_LEAF_HASH: [u8; 32] = [
     226, 180, 148, 10, 58, 237, 36, 17, 203, 101, 225, 28,
 ]; //solana poseidon
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
-const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.01) as u64; // 10_000_000 Low for testing purposes
+const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; // 10_000_000 Low for testing purposes
 
 const TARGET_DEPTH: usize = 8; //This means pools are capped to 256 leaves
 // declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
@@ -49,13 +49,22 @@ pub mod solnado {
     }
 
     //Leaves info will serve to store on the ledger a full pool batch
-    pub fn deposit(ctx: Context<Deposit>, leaf_hash: [u8; 32], leaves_info: [u8;520]) -> Result<()> {
+    pub fn deposit(
+        ctx: Context<Deposit>,
+        leaf_hash: [u8; 32],
+        leaves_info: [u8; 520]
+    ) -> Result<()> {
+        let pool_info = ctx.accounts.pool.to_account_info();
         let pool = &mut ctx.accounts.pool;
         let free = pool.find_first_match();
 
         if free <= 15 {
-            let user_batch_number: u64 = u64::from_be_bytes(leaves_info[..8].try_into().expect("Failed"));
-            let user_leaves: [u8;512]= leaves_info[8..520].try_into().expect("Failed");
+            //if this is not the first leaf of a new batch
+    
+            let user_batch_number: u64 = u64::from_be_bytes(
+                leaves_info[..8].try_into().expect("Failed")
+            );
+            let user_leaves: [u8; 512] = leaves_info[8..520].try_into().expect("Failed");
             let mut chunks: [[u8; 32]; 16] = [[0; 32]; 16];
 
             // Iterate through the original array in chunks of 32 bytes
@@ -63,192 +72,186 @@ pub mod solnado {
                 chunks[i].copy_from_slice(chunk);
             }
             // let batch_number: [u8; 8] = pool.batch_number.to_le_bytes();
-            let leaves = &pool.leaves;
-
             if user_batch_number != pool.batch_number {
-                msg!("user batch number: {} onchain batch number :{}", user_batch_number, pool.batch_number);
+                msg!(
+                    "user batch number: {} onchain batch number :{}",
+                    user_batch_number,
+                    pool.batch_number
+                );
                 return Err(ErrorCode::InvalidUserBatchNumber.into());
             }
-
-            if &chunks != leaves{
-                msg!("user_leaves: {:?}, onchain leaves {:?}", user_leaves, leaves);
-                return Err(ErrorCode::InvalidUserLeaves.into());
-            }
+            
             let transfer_instruction = system_instruction::transfer(
                 &ctx.accounts.depositor.key(),
-                &ctx.accounts.pool.key(),
+                &*pool_info.key,
                 FIXED_DEPOSIT_AMOUNT
             );
-
+            
             let _ = invoke(
                 &transfer_instruction,
-                &[ctx.accounts.depositor.to_account_info(), ctx.accounts.pool.to_account_info()]
+                &[ctx.accounts.depositor.to_account_info(), pool_info]
             );
             let start_index = free;
             msg!("Transfered {} lamports to pool", FIXED_DEPOSIT_AMOUNT);
-            let pool = &mut ctx.accounts.pool;
+            // let pool = &mut ctx.accounts.pool;
             pool.leaves[start_index] = leaf_hash;
-
+            
             msg!("Leaf {:?} \nadded at index {}", leaf_hash, start_index);
             pool.merkle_root = get_root(&pool.leaves);
 
+            //User sends what the outcome should be
+            if &chunks != &pool.leaves {
+                msg!("user_leaves: {:?}, onchain leaves {:?}", user_leaves, pool.leaves);
+                return Err(ErrorCode::InvalidUserLeaves.into());
+            }
+
             msg!("New root of temporary pool is {:?}", pool.merkle_root);
 
-            
             if free == 15 {
-                
-                msg!("Temporary pool is now at max capacity, storing the hash and creating a new one");
+                //After adding the leaf we create a new temporary pool
+                msg!(
+                    "Temporary pool is now at max capacity, storing the hash and creating a new one"
+                );
                 //After adding the leaf, we need to create a new pool
                 let new_batch = pool.merkle_root.clone();
                 pool.update_peaks(new_batch);
                 pool.batch_number += 1;
                 msg!("New batch number {}", pool.batch_number);
-    
+
                 let new_root = pool.compute_root_from_peaks();
                 let current_depth = next_power_of_two_batch(pool.batch_number as usize);
                 pool.whole_tree_root = new_root;
                 msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
                 let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
                 msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
-    
+
                 // Clear the pool leaves
                 pool.leaves = default_leaves();
-                // Add the new batch merkle root as the first leaf
                 pool.merkle_root = get_root(&pool.leaves);
-    
-
             }
-
-
             Ok(())
-        
-        }
-         else 
-        {
-        //     let user_batch_number: u64 = u64::from_be_bytes(leaves_info[..8].try_into().expect("Failed"));
-        //     let user_leaves: [u8;512]= leaves_info[8..520].try_into().expect("Failed");
-        //     let mut chunks: [[u8; 32]; 16] = [[0; 32]; 16];
+        } else {
+            //     let user_batch_number: u64 = u64::from_be_bytes(leaves_info[..8].try_into().expect("Failed"));
+            //     let user_leaves: [u8;512]= leaves_info[8..520].try_into().expect("Failed");
+            //     let mut chunks: [[u8; 32]; 16] = [[0; 32]; 16];
 
-        //     // Iterate through the original array in chunks of 32 bytes
-        //     for (i, chunk) in user_leaves.chunks_exact(32).enumerate() {
-        //         chunks[i].copy_from_slice(chunk);
-        //     }
-        //     // let batch_number: [u8; 8] = pool.batch_number.to_le_bytes();
-        //     let leaves = &pool.leaves;
+            //     // Iterate through the original array in chunks of 32 bytes
+            //     for (i, chunk) in user_leaves.chunks_exact(32).enumerate() {
+            //         chunks[i].copy_from_slice(chunk);
+            //     }
+            //     // let batch_number: [u8; 8] = pool.batch_number.to_le_bytes();
+            //     let leaves = &pool.leaves;
 
-        //     if user_batch_number != pool.batch_number {
-        //         msg!("user batch number: {} onchain batch number :{}", user_batch_number, pool.batch_number);
-        //         return Err(ErrorCode::InvalidUserBatchNumber.into());
-        //     }
+            //     if user_batch_number != pool.batch_number {
+            //         msg!("user batch number: {} onchain batch number :{}", user_batch_number, pool.batch_number);
+            //         return Err(ErrorCode::InvalidUserBatchNumber.into());
+            //     }
 
-        //     if &chunks != leaves{
-        //         msg!("user_leaves: {:?}, onchain leaves {:?}", user_leaves, leaves);
-        //         return Err(ErrorCode::InvalidUserLeaves.into());
-        //     }
-        //     /*
-        //         Old method that creates a cpi to store into inner instrucitons
-            
-        //      */
+            //     if &chunks != leaves{
+            //         msg!("user_leaves: {:?}, onchain leaves {:?}", user_leaves, leaves);
+            //         return Err(ErrorCode::InvalidUserLeaves.into());
+            //     }
+            //     /*
+            //         Old method that creates a cpi to store into inner instrucitons
 
-        //     // Pool is full: create batch data and call store_batch_with_ledger via CPI. 
-            
-            
-        //     // let pool_key = &pool.key();
-        //     // let batch_data: Vec<u8> = Vec::new();
-        //     // // for leaf in &pool.leaves {
-        //     // //     batch_data.extend_from_slice(leaf);
-        //     // // }
-        //     // let discriminator = [76, 65, 183, 124, 253, 177, 208, 199];
-        //     // let identifier: [u8; 8] = pool.identifier.to_le_bytes();
-        //     // // Prepend the discriminator to the batch data.
-        //     // let mut cpi_data = discriminator.to_vec();
-        //     // cpi_data.extend_from_slice(&identifier);
-        //     // cpi_data.extend_from_slice(&batch_number);
-        //     // for leaf in &pool.leaves {
-        //     //     cpi_data.extend_from_slice(leaf);
-        //     // }
-        //     // msg!("Discriminator length: {}", discriminator.len()); // Should be 8
-        //     // msg!("Identifier length: {}", identifier.len()); // Should be 8
-        //     // msg!("Batch number length: {}", batch_number.len()); // Should be 8
-        //     // msg!("Batch data length: {}", batch_data.len()); // Should be 512
-        //     // msg!("Total expected length: {}", 8 + 8 + 8 + batch_data.len());
+            //      */
 
-        //     // // let batch_array: [[u8;32]; 16] =batch_data.try_into().expect("Failed");
-        //     // // cpi_data.extend_from_slice(batch_array);
-        //     // let store_batch = &ctx.accounts.store_batch;
+            //     // Pool is full: create batch data and call store_batch_with_ledger via CPI.
 
-        //     // //The recipeint program
-        //     // let store_batch_key = Pubkey::from_str(
-        //     //     "7GHv6NewxZEFDjkUor8Ko3DG9BbMu9UwvHz9ZhgEsoZF"
-        //     // ).unwrap();
-        //     // if store_batch.key != &store_batch_key {
-        //     //     return Err(ErrorCode::InvalidStoreBatchAccount.into());
-        //     // }
-        //     // msg!("CPI data length {}", cpi_data.len());
-        //     // // build_memo(&cpi_data, [pool_sol_key]);
-        //     // let store_batch_ix = anchor_lang::solana_program::instruction::Instruction {
-        //     //     program_id: *store_batch.key,
-        //     //     accounts: vec![
-        //     //         // AccountMeta::new(*ctx.accounts.pool.to_account_info().key, false),
-        //     //         AccountMeta::new(*pool_key, false),
-        //     //         AccountMeta::new_readonly(ctx.accounts.system_program.key(), false)
-        //     //     ],
-        //     //     data: cpi_data, // This is our batch data (16 leaves concatenated)
-        //     // };
+            //     // let pool_key = &pool.key();
+            //     // let batch_data: Vec<u8> = Vec::new();
+            //     // // for leaf in &pool.leaves {
+            //     // //     batch_data.extend_from_slice(leaf);
+            //     // // }
+            //     // let discriminator = [76, 65, 183, 124, 253, 177, 208, 199];
+            //     // let identifier: [u8; 8] = pool.identifier.to_le_bytes();
+            //     // // Prepend the discriminator to the batch data.
+            //     // let mut cpi_data = discriminator.to_vec();
+            //     // cpi_data.extend_from_slice(&identifier);
+            //     // cpi_data.extend_from_slice(&batch_number);
+            //     // for leaf in &pool.leaves {
+            //     //     cpi_data.extend_from_slice(leaf);
+            //     // }
+            //     // msg!("Discriminator length: {}", discriminator.len()); // Should be 8
+            //     // msg!("Identifier length: {}", identifier.len()); // Should be 8
+            //     // msg!("Batch number length: {}", batch_number.len()); // Should be 8
+            //     // msg!("Batch data length: {}", batch_data.len()); // Should be 512
+            //     // msg!("Total expected length: {}", 8 + 8 + 8 + batch_data.len());
 
-        //     // // Invoke the CPI (it calls store_batch_with_ledger)
-        //     // let pool_id_bytes = &pool.identifier.to_le_bytes();
-        //     // let seeds: &[&[u8]] = &[b"pool_merkle".as_ref(), pool_id_bytes.as_ref()];
-        //     // let (_, bump) = Pubkey::find_program_address(seeds, &crate::ID);
-        //     // let signer_seeds = &[b"pool_merkle".as_ref(), pool_id_bytes.as_ref(), &[bump]];
+            //     // // let batch_array: [[u8;32]; 16] =batch_data.try_into().expect("Failed");
+            //     // // cpi_data.extend_from_slice(batch_array);
+            //     // let store_batch = &ctx.accounts.store_batch;
 
-        //     // anchor_lang::solana_program::program::invoke_signed(
-        //     //     &store_batch_ix,
-        //     //     &[pool.to_account_info(), ctx.accounts.system_program.to_account_info()],
-        //     //     &[signer_seeds]
-        //     // )?;
-        //     // msg!("Batch transaction created with calldata!");
+            //     // //The recipeint program
+            //     // let store_batch_key = Pubkey::from_str(
+            //     //     "7GHv6NewxZEFDjkUor8Ko3DG9BbMu9UwvHz9ZhgEsoZF"
+            //     // ).unwrap();
+            //     // if store_batch.key != &store_batch_key {
+            //     //     return Err(ErrorCode::InvalidStoreBatchAccount.into());
+            //     // }
+            //     // msg!("CPI data length {}", cpi_data.len());
+            //     // // build_memo(&cpi_data, [pool_sol_key]);
+            //     // let store_batch_ix = anchor_lang::solana_program::instruction::Instruction {
+            //     //     program_id: *store_batch.key,
+            //     //     accounts: vec![
+            //     //         // AccountMeta::new(*ctx.accounts.pool.to_account_info().key, false),
+            //     //         AccountMeta::new(*pool_key, false),
+            //     //         AccountMeta::new_readonly(ctx.accounts.system_program.key(), false)
+            //     //     ],
+            //     //     data: cpi_data, // This is our batch data (16 leaves concatenated)
+            //     // };
 
+            //     // // Invoke the CPI (it calls store_batch_with_ledger)
+            //     // let pool_id_bytes = &pool.identifier.to_le_bytes();
+            //     // let seeds: &[&[u8]] = &[b"pool_merkle".as_ref(), pool_id_bytes.as_ref()];
+            //     // let (_, bump) = Pubkey::find_program_address(seeds, &crate::ID);
+            //     // let signer_seeds = &[b"pool_merkle".as_ref(), pool_id_bytes.as_ref(), &[bump]];
 
-        //     let new_batch = get_root(leaves);
-        //     pool.update_peaks(new_batch);
-        //     pool.batch_number += 1;
-        //     msg!("New batch number {}", pool.batch_number);
+            //     // anchor_lang::solana_program::program::invoke_signed(
+            //     //     &store_batch_ix,
+            //     //     &[pool.to_account_info(), ctx.accounts.system_program.to_account_info()],
+            //     //     &[signer_seeds]
+            //     // )?;
+            //     // msg!("Batch transaction created with calldata!");
 
-        //     let new_root = pool.compute_root_from_peaks();
-        //     let current_depth = next_power_of_two_batch(pool.batch_number as usize);
-        //     pool.whole_tree_root = new_root;
-        //     msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
-        //     let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
-        //     msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
+            //     let new_batch = get_root(leaves);
+            //     pool.update_peaks(new_batch);
+            //     pool.batch_number += 1;
+            //     msg!("New batch number {}", pool.batch_number);
 
-        //     // Clear the pool leaves
-        //     pool.leaves = default_leaves();
-        //     // Add the new batch merkle root as the first leaf
-        //     pool.merkle_root = get_root(&pool.leaves);
+            //     let new_root = pool.compute_root_from_peaks();
+            //     let current_depth = next_power_of_two_batch(pool.batch_number as usize);
+            //     pool.whole_tree_root = new_root;
+            //     msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
+            //     let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
+            //     msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
 
-        //     //Check if pool is at max capacity
-        //     if (pool.max_leaves as u64) >= pool.batch_number * 16 {
-        //         let transfer_instruction = system_instruction::transfer(
-        //             &ctx.accounts.depositor.key(),
-        //             &pool.key(),
-        //             FIXED_DEPOSIT_AMOUNT
-        //         );
+            //     // Clear the pool leaves
+            //     pool.leaves = default_leaves();
+            //     // Add the new batch merkle root as the first leaf
+            //     pool.merkle_root = get_root(&pool.leaves);
 
-        //         let _ = invoke(
-        //             &transfer_instruction,
-        //             &[ctx.accounts.depositor.to_account_info(), pool.to_account_info()]
-        //         );
-        //         // After CPI returns, reset the pool:
-        //     } else {
-        //         msg!(
-        //             "The pool is at max capacity: {}, can't add new leaf as it would be unredeemable"
-        //         );
-        //     }
-        //     Ok(())
+            //     //Check if pool is at max capacity
+            //     if (pool.max_leaves as u64) >= pool.batch_number * 16 {
+            //         let transfer_instruction = system_instruction::transfer(
+            //             &ctx.accounts.depositor.key(),
+            //             &pool.key(),
+            //             FIXED_DEPOSIT_AMOUNT
+            //         );
 
-        return Err(ErrorCode::InvalidIndexing.into());
+            //         let _ = invoke(
+            //             &transfer_instruction,
+            //             &[ctx.accounts.depositor.to_account_info(), pool.to_account_info()]
+            //         );
+            //         // After CPI returns, reset the pool:
+            //     } else {
+            //         msg!(
+            //             "The pool is at max capacity: {}, can't add new leaf as it would be unredeemable"
+            //         );
+            //     }
+            //     Ok(())
 
+            return Err(ErrorCode::InvalidIndexing.into());
         }
     }
 
