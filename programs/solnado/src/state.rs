@@ -167,37 +167,6 @@ impl Pool {
         msg!("number of peaks after update: {}", self.number_of_peaks);
     }
 
-    // pub fn compute_root_from_peaks(&self) -> [u8;32] {
-    //     let mut nodes: Vec<[u8;32]> = self.peaks[..(self.number_of_peaks as usize)].to_vec();
-    //     let mut depth = 4; // Default depth for a batch
-
-    //     while nodes.len() > 1 {
-    //         let mut next_level = Vec::with_capacity((nodes.len() + 1) / 2);
-    //         let mut i = 0;
-
-    //         while i < nodes.len() {
-    //             if i + 1 < nodes.len() {
-    //                 let merged = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&nodes[i], &nodes[i+1]])
-    //                     .unwrap()
-    //                     .to_bytes();
-    //                 next_level.push(merged);
-    //             } else {
-    //                 // No sibling; use default root for this depth instead of duplicating last node
-    //                 let default_root = get_default_root_depth(depth);
-    //                 msg!("i: {}, Getting default root of depth {} : {:?}", i, depth, default_root);
-    //                 let merged = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&nodes[i], &default_root])
-    //                     .unwrap()
-    //                     .to_bytes();
-    //                 next_level.push(merged);
-    //             }
-    //             i += 2;
-    //         }
-    //         nodes = next_level;
-    //         depth += 1; // Increase depth as we move up the tree
-    //     }
-    //     nodes[0]
-    // }
-
     // Helper function to merge two nodes with potentially different depths.
     pub fn merge_nodes(a: ([u8; 32], u8), b: ([u8; 32], u8)) -> ([u8; 32], u8) {
         let (mut a_node, mut a_depth) = a;

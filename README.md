@@ -14,7 +14,7 @@ To interact with this program, look at the solana_mixer_cli on my github page.
 - **Storage** : efficient storage with merkle mountain range, storing leaves permananently on the solana ledger with the client having to bring the correct leaves to have a valid transaction.
 - **Padding**: Tree is padded with default leaves to have a fixed size tree but efficiently stored.
 - **Default Leaf**: `DEFAULT_LEAF` ensures new trees are initialized correctly.
-- **Merkle Root Computation**: Uses Poseidon hashing to generate intermediate and final root nodes.
+- **Merkle Root Computation**: Uses Poseidon hashing to generate intermediate and final root nodes. The `deepen` tree function is used to make the tree root deeper to match a certain size.
 
 ## Security Measures
 - **Nullifier Check**: Prevents reuse of proofs by creating a pda with nullifier as seed, it is important to make unique one.
