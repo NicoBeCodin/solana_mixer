@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Solana Mixer (Minimal)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Pixelated Font from Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+    <!-- Link to CSS -->
+    <script type="module" crossorigin src="/assets/index-BCBRjxys.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-B9yGJISE.css">
+  </head>
+  <body>
+    <header>
+      <h1>Solana Mixer</h1>
+      <div class="header-right">
+        <a href="https://github.com/NicoBeCodin" target="_blank" class="github-link">
+          <img src="https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png" alt="GitHub Logo" class="github-logo" />
+          Created by NicoBeCodin
+        </a>
+        <button id="connectWalletBtn">Connect Phantom</button>
+        <span id="walletInfo"></span>
+      </div>
+    </header>
+
+    <!-- Flex container with main content on the left and logs on the right -->
+    <div class="container">
+      <div class="main-content">
+        <section>
+          <h2>Initialize Pool</h2>
+          <input type="text" id="initPoolIdentifier" placeholder="Pool identifier (e.g. 123)" />
+          <button id="initPoolBtn">Initialize</button>
+          <span class="tooltip" data-tooltip="Initializes a new pool with the given identifier.">❔</span>
+        </section>
+        <section>
+          <h2>Available Pools</h2>
+          <button id="fetchPoolsBtn">Fetch Pools</button>
+          <span class="tooltip" data-tooltip="Uses the getProgramAccounts to fetch all the created pools.">❔</span>
+          <div id="poolList">
+            <!-- Pool info will be injected here -->
+            Click "Fetch Pools" to load pool data.
+          </div>
+        </section>
+        
+        <section>
+          <h2>Deposit 0.01 SOL</h2>
+          <input type="text" id="depositPoolIdentifier" placeholder="Pool identifier or address" />
+          <input type="text" id="depositSecret" placeholder="Secret" />
+          <input type="text" id="depositNullifier" placeholder="Nullifier" />
+          <button id="depositBtn">Deposit</button>
+          <!-- New Autofill and Copy buttons -->
+          <button id="autofillDepositBtn">Autofill</button>
+          <button id="copyDepositInfoBtn" title="Copy Deposit Info">📋</button>
+          <span class="tooltip" data-tooltip="This function deposits 0.01 SOL into a selected pool. The deposit will be added to the Merkle tree and can later be withdrawn anonymously. To verify a leaf, it has to be posted in batch, which happens every 16 leaves.">❔</span>
+
+        </section>
+        
+        <section>
+          <h2>Deposit Multiple</h2>
+          <input type="text" id="multiPoolIdentifier" placeholder="Pool identifier or address" />
+          <input type="text" id="depositMultipleSecret" placeholder="Secret" />
+          <input type="text" id="depositMultipleNullifier" placeholder="Nullifier" />
+          <input type="number" id="multiDepositCount" placeholder="Number of deposits" />
+          <button id="autofillMultipleDepositBtn">Autofill</button>
+          <button id="multiDepositBtn">Deposit Multiple</button>
+          <span class="tooltip" data-tooltip="This is the same as the deposit function, but reiterates as much as the user wants. It adds the iteration number at the end of the secret and nullifier.">❔</span>
+        </section>
+
+        <section>
+          <h2>Generate Proof &amp; Withdraw</h2>
+          <input type="text" id="batchIdentifier" placeholder="Pool identifier or address" />
+          <input type="text" id="batchSecret" placeholder="Secret" />
+          <input type="text" id="batchNullifier" placeholder="Nullifier" />
+          <input type="text" id="customRpcInput" placeholder="Enter custom RPC URL (optional)" />
+          <button id="generateProofBtn">Generate Proof</button>
+          <button id="withdrawBtn">Withdraw</button>
+          <button id="clearStorageBtn">Clear Memory</button>
+
+          <span class="tooltip" data-tooltip="The generate proof function parses the posted batches of a given pool which can take some time, and generates a membership proof. The withdraw function then sends that proof for verification, which creates a PDA derived from the nullifier hash to avoid double spends. The clear memory is in case you want to parse a new pool, because leaves are automatically stored in the session storage after parsing. You can input your custom RPC url which will speed up greatly the process of parsing onchain transactions.">❔</span>
+        </section>
+      </div>
+
+      <!-- Logs Sidebar now on the right -->
+      <aside class="logs-container">
+        <div class="logs-header">
+          <h2>Logs</h2>
+          <button id="clearLogsBtn">Clear logs</button>
+        </div>
+        <textarea id="logs" rows="42" readonly></textarea>
+      </aside>
+    </div>
+
+    <footer>
+      <p>&copy; 2025 Solana Mixer. 
+        <a href="https://github.com/NicoBeCodin" target="_blank">View on GitHub</a>
+      </p>
+    </footer>
+
+    <!-- Main JS -->
+  </body>
+</html>
