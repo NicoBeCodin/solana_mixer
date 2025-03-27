@@ -248,7 +248,7 @@ pub mod solnado {
             msg!("The nullifier account balance is not zero, it has already been initialized");
             return Err(ErrorCode::NullifierAlreadyUsed.into());
         }
-        require!(ctx.accounts.pool_creator.key()==pool.creator, ErrorCode::InvalidPoolCreator.into());
+        require!(ctx.accounts.pool_creator.key()==pool.creator, ErrorCode::InvalidPoolCreator);
 
         // Otherwise, create the account.
         // (Assume a minimal account size of 8 bytes; adjust as needed.)
@@ -322,7 +322,7 @@ pub mod solnado {
             "Withdrew {} lamports from pool\nTransfered {} lamports to user\n Transfered {} to pool creator",
             withdraw_pool_amount,
             withdrawer_amount,
-            creator_amount
+            creator_amount,
         );
 
         Ok(())
