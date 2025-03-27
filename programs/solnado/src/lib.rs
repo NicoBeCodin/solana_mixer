@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-
 pub mod state;
 pub mod error;
 pub mod utils;
@@ -9,7 +8,7 @@ use crate::state::*;
 use crate::utils::*;
 use anchor_lang::solana_program::{ program::{ invoke, invoke_signed }, system_instruction };
 use std::str::FromStr;
-
+use base64::{ engine::general_purpose, Engine as _ };
 pub const DEFAULT_LEAF: [u8; 32] = [0u8; 32];
 pub const TREE_DEPTH: u8 = 4;
 pub const LEAVES_LENGTH: usize = 16;
@@ -18,24 +17,40 @@ pub const DEFAULT_LEAF_HASH: [u8; 32] = [
     42, 9, 169, 253, 147, 197, 144, 194, 107, 145, 239, 251, 178, 73, 159, 7, 232, 247, 170, 18,
     226, 180, 148, 10, 58, 237, 36, 17, 203, 101, 225, 28,
 ]; //solana poseidon
+
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; // 10_000_000 Low for testing purposes
+const PROGRAM_FEE: u64 = 1_000_000; //0.001 SOL FEE PER WITHDRAWAL
 
 const TARGET_DEPTH: usize = 8; //This means pools are capped to 256 leaves
 // declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
-declare_id!("EKadvTET2vdCkurkYFu69v2iXdsAwHs3rQPj8XL5AUin");
+// declare_id!("EKadvTET2vdCkurkYFu69v2iXdsAwHs3rQPj8XL5AUin");
+declare_id!("URAeHt7FHf56ioY2XJNXbSx5Y3FbvQ9zeLGRpY1RiMD");
+
+const ADMIN_KEY: Pubkey = pubkey!("EJZQiTeikeg8zgU7YgRfwZCxc9GdhTsYR3fQrXv3uK9V");
 
 /// Our fixed deposit of 0.1 SOL.
 
 #[program]
 pub mod solnado {
+    use solana_program::sysvar::instructions;
+
     use crate::error::ErrorCode;
     use super::*;
 
-    pub fn initialize_pool(ctx: Context<InitializePool>, identifier: u64) -> Result<()> {
+    pub fn initialize_pool(
+        ctx: Context<InitializePool>,
+        identifier: [u8; 16],
+        deposit_amount: u64,
+        creator_fee: u64
+    ) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
 
         pool.identifier = identifier;
+        let pool_string = std::str
+            ::from_utf8(&identifier)
+            .unwrap_or("Invalid utf_8")
+            .trim_end_matches(char::from(0));
         pool.leaves = default_leaves();
         pool.merkle_root = get_root(&pool.leaves);
         pool.batch_number = 0;
@@ -43,48 +58,100 @@ pub mod solnado {
         pool.number_of_peaks = 0;
         pool.peaks = [DEFAULT_LEAF; 16];
         pool.max_leaves = (2_u32).pow(TARGET_DEPTH as u32) as u32;
+        pool.creator = ctx.accounts.authority.key();
+        //Creator fee should be capped
+        require!(
+            creator_fee <= deposit_amount.checked_div(10).unwrap(),
+            ErrorCode::CreatorFeeTooHigh
+        );
+        pool.creator_fee = creator_fee;
+        // At least a 0.01 SOL DEPOSIT
+        require!(deposit_amount >= 10_000_000, ErrorCode::InvalidDepositAmount);
+
+        pool.deposit_amount = deposit_amount;
+
+        msg!(
+            "Pool initialized by signer: {}\n
+        Pool name: {}\n
+        Deposit amount: {}\n
+        Creator_fee: {}\n",
+            ctx.accounts.authority.key(),
+            pool_string,
+            deposit_amount,
+            creator_fee
+        );
+
         msg!("Pool initialized with {:?} as root", pool.merkle_root);
         msg!("This should correspond to {:?}", get_default_root_depth(4));
+
         Ok(())
     }
 
     pub fn deposit(
         ctx: Context<Deposit>,
-        leaf_hash: [u8; 32],
-        leaves_info: [u8; 520]
+        leaf_hash: [u8; 32]
+        //leaves_info: [u8; 520]
     ) -> Result<()> {
         let pool_info = ctx.accounts.pool.to_account_info();
+        let pool_batch = ctx.accounts.pool.batch_number.clone();
         let pool = &mut ctx.accounts.pool;
+
         let free = pool.find_first_match();
+        let sysvar_account = &ctx.accounts.instruction_account;
+
+        // Load the full instruction list (memo should be at index 0 based on your tx order)
+        let maybe_memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
+
+        // msg!("Instruction details of this transaction: {:?}", maybe_memo_ix);
+
+        // Verify that it's the Memo program
+        let memo_program_id = Pubkey::from_str(
+            "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+        ).unwrap();
+        if maybe_memo_ix.program_id != memo_program_id {
+            msg!("First instruction is not a Memo, skipping decoding");
+            return Err(ErrorCode::MissingMemoInstruction.into());
+        }
+
+        // Memo data is a UTF-8 base64 string
+        let memo_base64 = std::str
+            ::from_utf8(&maybe_memo_ix.data)
+            .map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+
+        let memo_bytes = general_purpose::STANDARD
+            .decode(memo_base64)
+            .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+        // Now you have back the original Buffer.concat([batchNumber, leaves])
+        if memo_bytes.len() != 520 {
+            msg!("Memo bytes length invalid: got {}", memo_bytes.len());
+            return Err(ErrorCode::InvalidMemoLength.into());
+        }
+
+        // Extract the batch number and leaves from the memo
+        let user_batch_number = u64::from_be_bytes(
+            memo_bytes[0..8].try_into().map_err(|_| ErrorCode::FailedToParseBatch)?
+        );
+
+        let mut user_leaves: [[u8; 32]; 16] = [[0u8; 32]; 16];
+        for i in 0..16 {
+            user_leaves[i].copy_from_slice(&memo_bytes[8 + i * 32..8 + (i + 1) * 32]);
+        }
+
+        msg!("User batch number from memo: {}", user_batch_number);
+        msg!("First leaf in memo: {:?}", user_leaves[0]);
+
+        // OPTIONAL: Compare to current pool state
+        if &user_batch_number != &pool_batch {
+            return Err(ErrorCode::InvalidUserBatchNumber.into());
+        }
 
         if free <= 15 {
-            //Check that the user is giving correct leaves in his instruction data 
-            let user_batch_number: u64 = u64::from_be_bytes(
-                leaves_info[..8].try_into().expect("Failed")
-            );
-            let user_leaves: [u8; 512] = leaves_info[8..520].try_into().expect("Failed");
-            let mut chunks: [[u8; 32]; 16] = [[0; 32]; 16];
-
-            // Iterate through the original array in chunks of 32 bytes
-            for (i, chunk) in user_leaves.chunks_exact(32).enumerate() {
-                chunks[i].copy_from_slice(chunk);
-            }
-            // let batch_number: [u8; 8] = pool.batch_number.to_le_bytes();
-            if user_batch_number != pool.batch_number {
-                msg!(
-                    "user batch number: {} onchain batch number :{}",
-                    user_batch_number,
-                    pool.batch_number
-                );
-                return Err(ErrorCode::InvalidUserBatchNumber.into());
-            }
-            
             let transfer_instruction = system_instruction::transfer(
                 &ctx.accounts.depositor.key(),
                 &*pool_info.key,
-                FIXED_DEPOSIT_AMOUNT
+                pool.deposit_amount
             );
-            
+
             let _ = invoke(
                 &transfer_instruction,
                 &[ctx.accounts.depositor.to_account_info(), pool_info]
@@ -93,15 +160,15 @@ pub mod solnado {
             msg!("Transfered {} lamports to pool", FIXED_DEPOSIT_AMOUNT);
             // let pool = &mut ctx.accounts.pool;
             pool.leaves[start_index] = leaf_hash;
-            
+
             msg!("Leaf {:?} \nadded at index {}", leaf_hash, start_index);
             pool.merkle_root = get_root(&pool.leaves);
 
-            //User sends what the outcome should be
-            if &chunks != &pool.leaves {
-                msg!("user_leaves: {:?}, onchain leaves {:?}", user_leaves, pool.leaves);
+            if &user_leaves != &pool.leaves {
+                msg!("Leaves mismatch!");
                 return Err(ErrorCode::InvalidUserLeaves.into());
-            }            
+            }
+
             msg!("New root of temporary pool is {:?}", pool.merkle_root);
             if free == 15 {
                 //After adding the leaf we create a new temporary pool
@@ -130,22 +197,18 @@ pub mod solnado {
             return Err(ErrorCode::InvalidIndexing.into());
         }
     }
+    pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
+        require_keys_eq!(ctx.accounts.payer.key(), ADMIN_KEY, ErrorCode::UnauthorizedAction);
+        Ok(())
+    }
 
-    /// Transfers `amount` lamports from the pool PDA to a recipient.
-    pub fn admin_transfer(ctx: Context<AdminTransfer>, amount: u64, identifier: u64) -> Result<()> {
-        let pool_info = &ctx.accounts.pool;
-        let recipient_info = &ctx.accounts.recipient;
-        let system_program_info = &ctx.accounts.system_program;
+    pub fn withdraw_from_treasury(ctx: Context<WithdrawFromTreasury>, amount: u64) -> Result<()> {
+        // Check authority
+        require_keys_eq!(ctx.accounts.authority.key(), ADMIN_KEY, ErrorCode::UnauthorizedAction);
 
-        // Derive the pool PDA from the identifier.
-        let seed = identifier.to_le_bytes();
-        let seeds: &[&[u8]] = &[b"pool_merkle", &seed];
-        let (pda, bump) = Pubkey::find_program_address(seeds, ctx.program_id);
-        require!(pda == *pool_info.key, ErrorCode::InvalidPoolAccount);
-
-        **pool_info.try_borrow_mut_lamports()? -= amount;
-        **recipient_info.try_borrow_mut_lamports()? += amount;
-        msg!("Succesfully transfered {} lamports", amount);
+        // Transfer lamports from PDA to authority
+        **ctx.accounts.treasury.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.authority.to_account_info().try_borrow_mut_lamports()? += amount;
 
         Ok(())
     }
@@ -185,16 +248,17 @@ pub mod solnado {
             msg!("The nullifier account balance is not zero, it has already been initialized");
             return Err(ErrorCode::NullifierAlreadyUsed.into());
         }
+        require!(ctx.accounts.pool_creator.key()==pool.creator, ErrorCode::InvalidPoolCreator.into());
 
         // Otherwise, create the account.
         // (Assume a minimal account size of 8 bytes; adjust as needed.)
         let rent = Rent::get()?;
         let space = 8;
-        let lamports = rent.minimum_balance(space);
+        let rent_lamports = rent.minimum_balance(space);
         let create_ix = system_instruction::create_account(
             &ctx.accounts.withdrawer.key(), // payer
             &nullifier_pda, // new account address
-            lamports,
+            rent_lamports,
             space as u64,
             ctx.program_id // owner: our program
         );
@@ -208,6 +272,14 @@ pub mod solnado {
             ],
             &[seeds]
         )?;
+        msg!("Creating nullifier PDA costs {} lamports", rent_lamports);
+
+        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? -= rent_lamports;
+        **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
+
+        // Mark the PDA as rent-exempt by allocating space & assigning ownership
+        ctx.accounts.nullifier_account.realloc(space, false)?;
+        ctx.accounts.nullifier_account.assign(ctx.program_id);
 
         let depth = next_power_of_two_batch(pool.batch_number as usize);
         msg!("Current depth: {}", depth);
@@ -232,11 +304,48 @@ pub mod solnado {
         }
         msg!("Proof verified successfuly");
 
-        let amount = FIXED_DEPOSIT_AMOUNT;
+        let withdraw_pool_amount = pool.deposit_amount;
 
-        **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += amount;
-        msg!("Transfered {} lamports to user", amount);
+        let withdrawer_amount = pool.deposit_amount
+            .checked_sub(pool.creator_fee)
+            .unwrap()
+            .checked_sub(PROGRAM_FEE)
+            .unwrap();
+        let creator_amount = pool.creator_fee;
+
+        **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= withdraw_pool_amount;
+
+        **ctx.accounts.treasury.to_account_info().try_borrow_mut_lamports()? += PROGRAM_FEE;
+        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += withdrawer_amount;
+        **ctx.accounts.pool_creator.try_borrow_mut_lamports()? += creator_amount;
+        msg!(
+            "Withdrew {} lamports from pool\nTransfered {} lamports to user\n Transfered {} to pool creator",
+            withdraw_pool_amount,
+            withdrawer_amount,
+            creator_amount
+        );
+
+        Ok(())
+    }
+
+    /// Transfers `amount` lamports from the pool PDA to a recipient
+    /// This will be deleted in final version
+    pub fn admin_transfer(ctx: Context<AdminTransfer>, amount: u64, identifier: u64) -> Result<()> {
+        let pool_info = &ctx.accounts.pool;
+
+        let recipient_info = &ctx.accounts.recipient;
+        let system_program_info = &ctx.accounts.system_program;
+
+        // Derive the pool PDA from the identifier.
+        let seed = identifier.to_le_bytes();
+        let seeds: &[&[u8]] = &[b"pool_merkle", &seed];
+        let (pda, _) = Pubkey::find_program_address(seeds, ctx.program_id);
+        require!(pda == *pool_info.key, ErrorCode::InvalidPoolAccount);
+
+        **pool_info.try_borrow_mut_lamports()? -= amount;
+        **recipient_info.try_borrow_mut_lamports()? += amount;
+        msg!("Succesfully transfered {} lamports", amount);
+
         Ok(())
     }
 }

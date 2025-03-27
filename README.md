@@ -31,5 +31,6 @@ To interact with this program, look at the solana_mixer_cli on my github page.
 - Make the tree parameters modular to allow users to create their custom pools.
 
 ## License
-MIT
+This software is provided under the MIT License.
+However, commercial use of this software is strictly prohibited without explicit written permission from the author.321
 

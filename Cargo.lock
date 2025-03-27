@@ -2402,6 +2402,7 @@ dependencies = [
  "ark-ff 0.3.0",
  "ark-serialize 0.3.0",
  "ark-snark",
+ "base64 0.21.7",
  "groth16-solana",
  "hex",
  "light-hasher",

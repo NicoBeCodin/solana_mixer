@@ -52,4 +52,33 @@ pub enum ErrorCode {
 
     #[msg("Invalid Indexing error")]
     InvalidIndexing,
+
+    #[msg("Deposit amount too low")]
+    InvalidDepositAmount,
+
+    #[msg("Creator fee shouldn't be more than 1/10th of deposit amount")]
+    CreatorFeeTooHigh,
+
+    #[msg("This action is only executable by ADMIN")]
+    UnauthorizedAction,
+
+    #[msg("Invalid memo length")]
+    InvalidMemoLength,
+
+    #[msg("Invalid memo utf8")]
+    InvalidMemoUtf8,
+    
+    #[msg("Missing memo instruction")]
+    MissingMemoInstruction,
+
+    #[msg("Invalid memo base 64")]
+    InvalidMemoBase64,
+
+    #[msg("Failed to parse batch")]
+    FailedToParseBatch,
+
+    #[msg("Invalid pool creator")]
+    InvalidPoolCreator,
+    
+
 }

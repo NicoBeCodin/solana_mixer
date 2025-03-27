@@ -31,7 +31,7 @@ light-hasher = "1.1.0"
 hex = "0.4"
 num-bigint= "0.4.6"
 num-traits = "0.2.19"
-
+base64 = "0.21" 
 solana-program = "1.17.15"
 
 

@@ -1,5 +1,5 @@
 use crate::error::ErrorCode;
-use crate::{LEAVES_LENGTH, NULLIFIER_LIST_LENGTH, DEFAULT_LEAF};
+use crate::{LEAVES_LENGTH,  DEFAULT_LEAF};
 use crate::ErrorCode::*;
 use anchor_lang::prelude::*;
 use ark_ff::{  FromBytes, ToBytes };

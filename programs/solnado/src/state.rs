@@ -1,18 +1,19 @@
 use anchor_lang::prelude::*;
+use solana_program::instruction::Instruction;
 use crate::error::ErrorCode;
 use crate::{ DEFAULT_LEAF, LEAVES_LENGTH, TARGET_DEPTH };
 use solana_poseidon::{ Parameters, hashv, Endianness };
 use crate::utils::get_default_root_depth;
 
 #[derive(Accounts)]
-#[instruction(identifier: u64)]
+#[instruction(identifier: [u8;16])]
 pub struct InitializePool<'info> {
     #[account(
         init,
         payer = authority,
         // We'll allocate enough space for the Pool struct.
         space = 8 + Pool::MAX_SIZE,
-        seeds = [b"pool_merkle".as_ref(), identifier.to_le_bytes().as_ref()],
+        seeds = [b"pool_merkle".as_ref(), &identifier],
         bump
     )]
     pub pool: Account<'info, Pool>,
@@ -22,22 +23,37 @@ pub struct InitializePool<'info> {
 
     pub system_program: Program<'info, System>,
 }
-
 #[derive(Accounts)]
-pub struct AdminTransfer<'info> {
-    /// The pool PDA from which funds will be transferred.
-    /// (This must be derived as: seeds = [b"pool_merkle", identifier.to_le_bytes()], bump)
+#[instruction()]
+pub struct InitializeTreasury<'info> {
+    #[account(
+        init,
+        payer = payer,
+        space = 8,
+        seeds = [b"treasury"],
+        bump
+    )]
+    pub treasury: Account<'info, TreasuryAccount>,
+
     #[account(mut)]
-    ///CHECK: Pool pda
-    pub pool: AccountInfo<'info>,
-    /// The recipient account that will receive the funds.
-    #[account(mut)]
-    ///CHECK: Recipient
-    pub recipient: AccountInfo<'info>,
-    /// The admin authority who is allowed to trigger the transfer.
-    pub admin: Signer<'info>,
+    pub payer: Signer<'info>,
+
     pub system_program: Program<'info, System>,
 }
+#[account]
+pub struct TreasuryAccount {} // Dummy, for space allocation
+
+#[derive(Accounts)]
+pub struct WithdrawFromTreasury<'info> {
+
+    #[account(mut, seeds = [b"treasury"], bump)]
+    ///CHECK: Treasury account
+    pub treasury: Account<'info, TreasuryAccount>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+}
+
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
@@ -47,6 +63,8 @@ pub struct Deposit<'info> {
     #[account(mut)]
     pub depositor: Signer<'info>,
 
+    ///CHECK : SYSVAR for instructions
+    pub instruction_account: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -59,6 +77,17 @@ pub struct Withdraw<'info> {
     #[account(mut)]
     pub nullifier_account: AccountInfo<'info>,
 
+    ///CHECK : The creator of the pool gets part of the fee
+    #[account(mut)]
+    pub pool_creator: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"treasury"],
+        bump
+    )]
+    pub treasury: Account<'info, TreasuryAccount>,  
+
     #[account(mut)]
     pub withdrawer: Signer<'info>,
 
@@ -66,18 +95,21 @@ pub struct Withdraw<'info> {
 }
 
 //
-// Pool Account (PDA or normal) Data
+// Pool Account Data
 //
 #[account]
 pub struct Pool {
     /// Current merkle root after all deposits
-    pub merkle_root: [u8; 32],
+    pub merkle_root: [u8; 32], //8 + 32 + 512 + 16 + 32 + 8 + 8 + 32 + 8 + 512 + 16 + 1 + 4
 
     /// Leaves array of size 8
     pub leaves: [[u8; 32]; 16],
 
     // Set of used nullifiers to prevent double-withdraw
-    pub identifier: u64,
+    pub identifier: [u8;16],
+    pub creator: Pubkey,
+    pub creator_fee: u64, 
+    pub deposit_amount: u64,
     //This will serve to reconstruct the tree
     pub whole_tree_root: [u8; 32],
     pub batch_number: u64,
@@ -88,7 +120,7 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub const MAX_SIZE: usize = 32 + 16 * 32 + 8 + 8 + 32 * 16 + 8 + 16 + 1 + 100;
+    pub const MAX_SIZE: usize =  32 + 512 + 16 + 32 + 8 + 8 + 32 + 8 + 512 + 16 + 1 + 4 +  100;
 
     pub fn get_free_leaf(&self) -> usize {
         let mut start_index = 0;
@@ -139,7 +171,7 @@ impl Pool {
             count += 1;
         } else {
             panic!("Exceeded maximum peak capacity");
-        
+        }
         // Merge adjacent peaks while they have the same depth.
         while count >= 2 && peak_depths[(count - 1) as usize] == peak_depths[(count - 2) as usize] {
             let left = peak_hashes[(count - 2) as usize];
@@ -166,6 +198,7 @@ impl Pool {
         msg!("depth after update: {:?}", &self.depth[..self.number_of_peaks as usize]);
         msg!("number of peaks after update: {}", self.number_of_peaks);
     }
+
 
     // Helper function to merge two nodes with potentially different depths.
     pub fn merge_nodes(a: ([u8; 32], u8), b: ([u8; 32], u8)) -> ([u8; 32], u8) {
@@ -250,4 +283,22 @@ impl Pool {
         }
         hashed
     }
+}
+
+
+// Gonna delete this 
+#[derive(Accounts)]
+pub struct AdminTransfer<'info> {
+    /// The pool PDA from which funds will be transferred.
+    /// (This must be derived as: seeds = [b"pool_merkle", identifier.to_le_bytes()], bump)
+    #[account(mut)]
+    ///CHECK: Pool pda
+    pub pool: AccountInfo<'info>,
+    /// The recipient account that will receive the funds.
+    #[account(mut)]
+    ///CHECK: Recipient
+    pub recipient: AccountInfo<'info>,
+    /// The admin authority who is allowed to trigger the transfer.
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
