@@ -93,7 +93,9 @@ pub fn root_depth(depth: usize) -> [u8; 32] {
         )
             .unwrap()
             .to_bytes();
-        i+=1;        
+        i+=1;
+        msg!("Depth i: {}, hash : {:?}", i, parent_hash);
+
     }
     parent_hash
 }

@@ -22,7 +22,7 @@ const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; // 10_000_000 Low for testing purposes
 const PROGRAM_FEE: u64 = 1_000_000; //0.001 SOL FEE PER WITHDRAWAL
 
-const TARGET_DEPTH: usize = 8; //This means pools are capped to 256 leaves
+const TARGET_DEPTH: usize = 20; //This means pools are capped to 256 leaves
 // declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
 // declare_id!("EKadvTET2vdCkurkYFu69v2iXdsAwHs3rQPj8XL5AUin");
 declare_id!("URAeHt7FHf56ioY2XJNXbSx5Y3FbvQ9zeLGRpY1RiMD");
