@@ -1,14 +1,18 @@
 use anchor_lang::prelude::*;
-pub mod state;
 pub mod error;
+pub mod state;
 pub mod utils;
 pub mod verifying_key;
 use crate::error::ErrorCode;
 use crate::state::*;
 use crate::utils::*;
-use anchor_lang::solana_program::{ program::{ invoke, invoke_signed }, system_instruction };
+use anchor_lang::solana_program::{
+    program::{invoke, invoke_signed},
+    system_instruction,
+    sysvar::instructions,
+};
+use base64::{engine::general_purpose, Engine as _};
 use std::str::FromStr;
-use base64::{ engine::general_purpose, Engine as _ };
 pub const DEFAULT_LEAF: [u8; 32] = [0u8; 32];
 pub const TREE_DEPTH: u8 = 4;
 pub const LEAVES_LENGTH: usize = 16;
@@ -23,32 +27,33 @@ const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; //
 const PROGRAM_FEE: u64 = 1_000_000; //0.001 SOL FEE PER WITHDRAWAL
 
 const TARGET_DEPTH: usize = 20; //This means pools are capped to 256 leaves
-// declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
-// declare_id!("EKadvTET2vdCkurkYFu69v2iXdsAwHs3rQPj8XL5AUin");
-declare_id!("URAeHt7FHf56ioY2XJNXbSx5Y3FbvQ9zeLGRpY1RiMD");
+                                // declare_id!("Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC");
+                                // declare_id!("EKadvTET2vdCkurkYFu69v2iXdsAwHs3rQPj8XL5AUin");
+                                // declare_id!("URAeHt7FHf56ioY2XJNXbSx5Y3FbvQ9zeLGRpY1RiMD");
+declare_id!("FyAuPyboHtdnnqbcAhTXjKwXRNqxiWYK4Xwvc5Gtw8Ln");
 
-const ADMIN_KEY: Pubkey = pubkey!("EJZQiTeikeg8zgU7YgRfwZCxc9GdhTsYR3fQrXv3uK9V");
+//On linux mint version:
 
-/// Our fixed deposit of 0.1 SOL.
+// const ADMIN_KEY: Pubkey = pubkey!("EJZQiTeikeg8zgU7YgRfwZCxc9GdhTsYR3fQrXv3uK9V");
+const ADMIN_KEY: Pubkey = pubkey!("BSpEVXMrA3C1myPSUmT8hQSecrvJaUin8vnQTfzGGf17");
+
 
 #[program]
 pub mod solnado {
-    use solana_program::sysvar::instructions;
 
-    use crate::error::ErrorCode;
     use super::*;
+    use crate::error::ErrorCode;
 
     pub fn initialize_pool(
         ctx: Context<InitializePool>,
         identifier: [u8; 16],
         deposit_amount: u64,
-        creator_fee: u64
+        creator_fee: u64,
     ) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
 
         pool.identifier = identifier;
-        let pool_string = std::str
-            ::from_utf8(&identifier)
+        let pool_string = std::str::from_utf8(&identifier)
             .unwrap_or("Invalid utf_8")
             .trim_end_matches(char::from(0));
         pool.leaves = default_leaves();
@@ -66,7 +71,10 @@ pub mod solnado {
         );
         pool.creator_fee = creator_fee;
         // At least a 0.01 SOL DEPOSIT
-        require!(deposit_amount >= 10_000_000, ErrorCode::InvalidDepositAmount);
+        require!(
+            deposit_amount >= 10_000_000,
+            ErrorCode::InvalidDepositAmount
+        );
 
         pool.deposit_amount = deposit_amount;
 
@@ -87,10 +95,151 @@ pub mod solnado {
         Ok(())
     }
 
+    pub fn initialize_variable_pool(ctx: Context<InitializeVariablePool>, identifier: [u8;16]) -> Result<()> {
+        msg!("Initializing a variable pool, will be used for variable amounts deposits");
+
+        let pool = &mut ctx.accounts.pool;
+
+        pool.identifier = identifier;
+        let pool_string = std::str::from_utf8(&identifier)
+            .unwrap_or("Invalid utf_8")
+            .trim_end_matches(char::from(0));
+        pool.batch_leaves = default_leaves();
+        pool.merkle_root_batch = get_root(&pool.batch_leaves);
+        pool.batch_number = 0;
+        pool.depth = [0; 16];
+        pool.number_of_peaks = 0;
+        pool.peaks = [DEFAULT_LEAF; 16];
+        pool.max_leaves = (2_u32).pow(TARGET_DEPTH as u32) as u32;
+        pool.min_deposit_amount = 10_000_000;
+        // At least a 0.01 SOL DEPOSIT per action of use
+        
+
+        msg!(
+            "Pool initialized by signer: {}\n
+        Pool name: {}\n
+        Pool max leaves: {}\n",
+            ctx.accounts.authority.key(),
+            pool_string,
+            pool.max_leaves
+        );
+
+        msg!(
+            "Variable pool initialized with {:?} as root",
+            pool.merkle_root_batch
+        );
+        msg!("This should correspond to {:?}", get_default_root_depth(4));
+
+        Ok(())
+    }
+
+    pub fn deposit_variable(
+        ctx: Context<DepositVariable>,
+        proof: [u8; 256],
+        public_inputs: [u8;96],
+    ) -> Result<()> {
+        let pool = &mut ctx.accounts.pool;
+        let depositor_info = ctx.accounts.depositor.to_account_info();
+        let pool_info = pool.to_account_info();
+
+        // Expect exactly 96 bytes: [sum(32) || leaf1(32) || leaf2(32)]
+        require!(public_inputs.len() == 96, ErrorCode::InvalidArgument);
+
+        // === 1. Verify the sum-proof ===
+        // let mut inputs_arr: Vec<[u8; 32]> = public_inputs
+        //     .chunks(32)
+        //     .map(|chunk| chunk.try_into().unwrap())
+        //     .collect();
+
+        // Verify the deposit proof
+        let (sum_be, leaf1, leaf2)= verify_deposit_proof(&proof, &public_inputs).unwrap();
+
+        // Interpret sum as big-endian u64 (upper bytes must be zero)
+        let deposit_sum = u64::from_be_bytes(sum_be[24..32].try_into().unwrap());
+
+        msg!("Depositing a total {} of in pool", deposit_sum);
+
+        // === 2. Transfer lamports ===
+        invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.depositor.key(),
+                &pool_info.key(),
+                deposit_sum,
+            ),
+            &[
+                depositor_info.clone(),
+                pool_info.clone(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+
+        // === 3. Insert leaves and handle batch rollover ===
+        let free = pool.find_first_match();
+
+        if free <= LEAVES_LENGTH - 2 {
+            // Two slots available: insert both
+            pool.batch_leaves[free] = leaf1;
+            pool.batch_leaves[free + 1] = leaf2;
+            pool.merkle_root_batch = get_root(&pool.batch_leaves);
+        } else if free == LEAVES_LENGTH - 1 {
+            // Only one slot: insert first, then rollover, then insert second on new batch
+            pool.batch_leaves[free] = leaf1;
+            pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+            // Enforce memo with full batch composition
+            let sysvar_account = &ctx.accounts.instruction_account;
+            let maybe_memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
+            let memo_pid = anchor_lang::solana_program::pubkey::Pubkey::from_str(
+                "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLmfcHr",
+            )
+            .unwrap();
+            require!(
+                maybe_memo_ix.program_id == memo_pid,
+                ErrorCode::MissingMemoInstruction
+            );
+            let memo_base64 =
+                std::str::from_utf8(&maybe_memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+            let memo_bytes = general_purpose::STANDARD
+                .decode(memo_base64)
+                .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+            require!(memo_bytes.len() == 520, ErrorCode::InvalidMemoLength);
+
+            // Optional: verify user batch number + leaves match
+            let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
+            require!(
+                user_batch == pool.batch_number,
+                ErrorCode::InvalidUserBatchNumber
+            );
+            let mut user_leaves: [[u8; 32]; LEAVES_LENGTH] = [[0u8; 32]; LEAVES_LENGTH];
+            for i in 0..LEAVES_LENGTH {
+                user_leaves[i].copy_from_slice(&memo_bytes[8 + i * 32..8 + (i + 1) * 32]);
+            }
+            require!(&user_leaves == &pool.batch_leaves, ErrorCode::InvalidUserLeaves);
+
+            // Rollover batch exactly as in deposit()
+            let new_batch_root = pool.merkle_root_batch;
+            pool.update_peaks(new_batch_root);
+            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+            let whole_root = pool.compute_root_from_peaks();
+            pool.whole_tree_root = whole_root;
+            let current_depth = next_power_of_two_batch(pool.batch_number as usize);
+            let _deep_root = pool.deepen(current_depth, TARGET_DEPTH);
+            pool.batch_leaves = default_leaves();
+            pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+            // Insert second leaf into fresh batch
+            pool.batch_leaves[0] = leaf2;
+            pool.merkle_root_batch = get_root(&pool.batch_leaves);
+        } else {
+            // No slots available
+            return Err(ErrorCode::InvalidIndexing.into());
+        }
+        Ok(())
+    }
+
     pub fn deposit(
         ctx: Context<Deposit>,
-        leaf_hash: [u8; 32]
-        //leaves_info: [u8; 520]
+        leaf_hash: [u8; 32], //leaves_info: [u8; 520]
     ) -> Result<()> {
         let pool_info = ctx.accounts.pool.to_account_info();
         let pool_batch = ctx.accounts.pool.batch_number.clone();
@@ -105,18 +254,16 @@ pub mod solnado {
         // msg!("Instruction details of this transaction: {:?}", maybe_memo_ix);
 
         // Verify that it's the Memo program
-        let memo_program_id = Pubkey::from_str(
-            "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-        ).unwrap();
+        let memo_program_id =
+            Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
         if maybe_memo_ix.program_id != memo_program_id {
             msg!("First instruction is not a Memo, skipping decoding");
             return Err(ErrorCode::MissingMemoInstruction.into());
         }
 
         // Memo data is a UTF-8 base64 string
-        let memo_base64 = std::str
-            ::from_utf8(&maybe_memo_ix.data)
-            .map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+        let memo_base64 =
+            std::str::from_utf8(&maybe_memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
 
         let memo_bytes = general_purpose::STANDARD
             .decode(memo_base64)
@@ -129,7 +276,9 @@ pub mod solnado {
 
         // Extract the batch number and leaves from the memo
         let user_batch_number = u64::from_be_bytes(
-            memo_bytes[0..8].try_into().map_err(|_| ErrorCode::FailedToParseBatch)?
+            memo_bytes[0..8]
+                .try_into()
+                .map_err(|_| ErrorCode::FailedToParseBatch)?,
         );
 
         let mut user_leaves: [[u8; 32]; 16] = [[0u8; 32]; 16];
@@ -149,12 +298,12 @@ pub mod solnado {
             let transfer_instruction = system_instruction::transfer(
                 &ctx.accounts.depositor.key(),
                 &*pool_info.key,
-                pool.deposit_amount
+                pool.deposit_amount,
             );
 
             let _ = invoke(
                 &transfer_instruction,
-                &[ctx.accounts.depositor.to_account_info(), pool_info]
+                &[ctx.accounts.depositor.to_account_info(), pool_info],
             );
             let start_index = free;
             msg!("Transfered {} lamports to pool", FIXED_DEPOSIT_AMOUNT);
@@ -186,7 +335,11 @@ pub mod solnado {
                 pool.whole_tree_root = new_root;
                 msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
                 let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
-                msg!("Computed deep root with target depth: {} \n{:?}", TARGET_DEPTH, deep_root);
+                msg!(
+                    "Computed deep root with target depth: {} \n{:?}",
+                    TARGET_DEPTH,
+                    deep_root
+                );
 
                 // Clear the pool leaves
                 pool.leaves = default_leaves();
@@ -198,25 +351,41 @@ pub mod solnado {
         }
     }
     pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
-        require_keys_eq!(ctx.accounts.payer.key(), ADMIN_KEY, ErrorCode::UnauthorizedAction);
+        require_keys_eq!(
+            ctx.accounts.payer.key(),
+            ADMIN_KEY,
+            ErrorCode::UnauthorizedAction
+        );
         Ok(())
     }
 
     pub fn withdraw_from_treasury(ctx: Context<WithdrawFromTreasury>, amount: u64) -> Result<()> {
         // Check authority
-        require_keys_eq!(ctx.accounts.authority.key(), ADMIN_KEY, ErrorCode::UnauthorizedAction);
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            ADMIN_KEY,
+            ErrorCode::UnauthorizedAction
+        );
 
         // Transfer lamports from PDA to authority
-        **ctx.accounts.treasury.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.authority.to_account_info().try_borrow_mut_lamports()? += amount;
+        **ctx
+            .accounts
+            .treasury
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= amount;
+        **ctx
+            .accounts
+            .authority
+            .to_account_info()
+            .try_borrow_mut_lamports()? += amount;
 
         Ok(())
     }
 
     pub fn withdraw(
         ctx: Context<Withdraw>,
-        proof: [u8; 256], // Real proof (a,b and c)
-        public_inputs: [u8; 64] //root & nullifier hash
+        proof: [u8; 256],        // Real proof (a,b and c)
+        public_inputs: [u8; 64], //root & nullifier hash
     ) -> Result<()> {
         let pool = &ctx.accounts.pool;
         let system_program = &ctx.accounts.system_program;
@@ -234,10 +403,8 @@ pub mod solnado {
             .expect("Failed converting the public_input root");
 
         //Nullifier pda creation to store nullifier hash
-        let (nullifier_pda, bump) = Pubkey::find_program_address(
-            &[nullifier_hash.as_ref()],
-            ctx.program_id
-        );
+        let (nullifier_pda, bump) =
+            Pubkey::find_program_address(&[nullifier_hash.as_ref()], ctx.program_id);
         let nullifier_account = &ctx.accounts.nullifier_account;
         if &nullifier_pda != nullifier_account.key {
             msg!("The provided nullifier account and nullifier derived pda do not match.");
@@ -248,7 +415,10 @@ pub mod solnado {
             msg!("The nullifier account balance is not zero, it has already been initialized");
             return Err(ErrorCode::NullifierAlreadyUsed.into());
         }
-        require!(ctx.accounts.pool_creator.key()==pool.creator, ErrorCode::InvalidPoolCreator);
+        require!(
+            ctx.accounts.pool_creator.key() == pool.creator,
+            ErrorCode::InvalidPoolCreator
+        );
 
         // Otherwise, create the account.
         // (Assume a minimal account size of 8 bytes; adjust as needed.)
@@ -257,10 +427,10 @@ pub mod solnado {
         let rent_lamports = rent.minimum_balance(space);
         let create_ix = system_instruction::create_account(
             &ctx.accounts.withdrawer.key(), // payer
-            &nullifier_pda, // new account address
+            &nullifier_pda,                 // new account address
             rent_lamports,
             space as u64,
-            ctx.program_id // owner: our program
+            ctx.program_id, // owner: our program
         );
         let seeds = &[nullifier_hash.as_ref(), &[bump]];
         invoke_signed(
@@ -270,7 +440,7 @@ pub mod solnado {
                 nullifier_account.clone(),
                 ctx.accounts.system_program.to_account_info(),
             ],
-            &[seeds]
+            &[seeds],
         )?;
         msg!("Creating nullifier PDA costs {} lamports", rent_lamports);
 
@@ -288,7 +458,11 @@ pub mod solnado {
         let deepen_root = pool.deepen(depth, TARGET_DEPTH);
         if deepen_root != public_input_root {
             msg!("Deepened root isn't same as public_input_root");
-            msg!("Deepen root {:?}\n public_input_root {:?}", deepen_root, public_input_root);
+            msg!(
+                "Deepen root {:?}\n public_input_root {:?}",
+                deepen_root,
+                public_input_root
+            );
             return Err(ErrorCode::InvalidPublicInputRoot.into());
         }
 
@@ -306,16 +480,25 @@ pub mod solnado {
 
         let withdraw_pool_amount = pool.deposit_amount;
 
-        let withdrawer_amount = pool.deposit_amount
+        let withdrawer_amount = pool
+            .deposit_amount
             .checked_sub(pool.creator_fee)
             .unwrap()
             .checked_sub(PROGRAM_FEE)
             .unwrap();
         let creator_amount = pool.creator_fee;
 
-        **ctx.accounts.pool.to_account_info().try_borrow_mut_lamports()? -= withdraw_pool_amount;
+        **ctx
+            .accounts
+            .pool
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= withdraw_pool_amount;
 
-        **ctx.accounts.treasury.to_account_info().try_borrow_mut_lamports()? += PROGRAM_FEE;
+        **ctx
+            .accounts
+            .treasury
+            .to_account_info()
+            .try_borrow_mut_lamports()? += PROGRAM_FEE;
         **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += withdrawer_amount;
         **ctx.accounts.pool_creator.try_borrow_mut_lamports()? += creator_amount;
         msg!(

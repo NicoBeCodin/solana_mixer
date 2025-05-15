@@ -34,3 +34,10 @@ To interact with this program, look at the solana_mixer_cli on my github page.
 This software is provided under the MIT License.
 However, commercial use of this software is strictly prohibited without explicit written permission from the author.321
 
+# TODO
+ - Smart parsing of leaves using correct PDA
+ - Implement a variable pool amount
+ - Implement any asset class
+ 
+
+
