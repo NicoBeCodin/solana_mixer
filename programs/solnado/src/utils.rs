@@ -1,3 +1,4 @@
+
 use crate::error::ErrorCode;
 use crate::ErrorCode::*;
 use crate::DEFAULT_LEAF_HASH;
@@ -5,12 +6,12 @@ use crate::{DEFAULT_LEAF, LEAVES_LENGTH};
 use anchor_lang::prelude::*;
 use ark_ff::{FromBytes, ToBytes};
 use solana_poseidon::{hashv, Endianness, Parameters};
-
+use anchor_lang::solana_program::{sysvar::instructions};
 use crate::verifying_key::*;
 use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use std::ops::Neg;
 type G1 = ark_bn254::G1Affine;
-
+use base64::{engine::general_purpose, Engine as _};
 pub type LeavesArray = [[u8; 32]; 16];
 //Other default hashes can be added to avoid calculation
 pub const DEPTH_FOUR: [u8; 32] = [
@@ -101,7 +102,7 @@ pub fn root_depth(depth: usize) -> [u8; 32] {
         .unwrap()
         .to_bytes();
         i += 1;
-        msg!("Depth i: {}, hash : {:?}", i, parent_hash);
+        // msg!("Depth i: {}, hash : {:?}", i, parent_hash);
     }
     parent_hash
 }
@@ -195,4 +196,45 @@ pub fn verify_deposit_proof(
 
     Ok((*sum_be, *leaf1, *leaf2))
 
+}
+
+pub const SUB_BATCH_SIZE: usize = 8;
+
+pub fn enforce_sub_batch_memo(
+    sysvar_account: &AccountInfo,
+    batch_number: u64,
+    expected_leaves: &[[u8;32]],
+) -> Result<()> {
+    // Load the first instruction (must be Memo)
+    let memo_ix =   instructions::load_instruction_at_checked(0, sysvar_account)?;
+    let memo_program_id = anchor_lang::solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+        
+    require!(
+        memo_ix.program_id == memo_program_id,
+        ErrorCode::MissingMemoInstruction
+    );
+
+    // Decode base64 payload
+    let memo_str = std::str::from_utf8(&memo_ix.data)
+    .map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+    msg!("Translating from utf8 {}", memo_str);
+    let memo_bytes = general_purpose::STANDARD.decode(memo_str)
+    .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+    msg!("Getting memo bytes {:?}", memo_bytes);
+
+    // Must be exactly 8-byte batch number + N*32 bytes
+    let expected_len = 8 + expected_leaves.len() * 32;
+    require!(memo_bytes.len() == expected_len, ErrorCode::InvalidMemoLength);
+
+    // Check batch number (big-endian u64)
+    let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
+    require!(user_batch == batch_number, ErrorCode::InvalidUserBatchNumber);
+
+    // Verify each leaf
+    for (i, leaf) in expected_leaves.iter().enumerate() {
+        let start = 8 + i * 32;
+        let slice: [u8;32] = memo_bytes[start..start+32].try_into().unwrap();
+        require!(&slice == leaf, ErrorCode::InvalidUserLeaves);
+    }
+    Ok(())
 }
