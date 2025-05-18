@@ -377,8 +377,8 @@ pub mod solnado {
             &system_instruction::create_account(
                 &ctx.accounts.user.key(),
                 &pda1,
-                Rent::get()?.minimum_balance(2),
-                8,
+                Rent::get()?.minimum_balance(MIN_PDA_SIZE),
+                MIN_PDA_SIZE as u64,
                 ctx.program_id,
             ),
             &[
@@ -403,8 +403,8 @@ pub mod solnado {
             &system_instruction::create_account(
                 &ctx.accounts.user.key(),
                 &pda2,
-                Rent::get()?.minimum_balance(2),
-                8,
+                Rent::get()?.minimum_balance(MIN_PDA_SIZE),
+                MIN_PDA_SIZE as u64,
                 ctx.program_id,
             ),
             &[
