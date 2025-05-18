@@ -1,4 +1,3 @@
-
 use crate::error::ErrorCode;
 use crate::ErrorCode::*;
 use crate::DEFAULT_LEAF_HASH;
@@ -10,6 +9,7 @@ use anchor_lang::solana_program::{sysvar::instructions};
 use crate::verifying_key::*;
 use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use std::ops::Neg;
+pub const SUB_BATCH_SIZE: usize = 8;
 type G1 = ark_bn254::G1Affine;
 use base64::{engine::general_purpose, Engine as _};
 pub type LeavesArray = [[u8; 32]; 16];
@@ -148,6 +148,8 @@ pub fn verify_proof(proof: &[u8; 256], public_inputs: &[u8]) -> Result<bool> {
     Ok(res)
 }
 
+
+//For variable deposit amount
 pub fn verify_deposit_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
@@ -198,7 +200,68 @@ pub fn verify_deposit_proof(
 
 }
 
-pub const SUB_BATCH_SIZE: usize = 8;
+
+
+pub fn verify_combine_proof(
+    proof: &[u8; 256],
+    public_inputs: &[u8],
+) -> Result<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
+    // Expect exactly 4 × 32 bytes
+    if public_inputs.len() != 128 {
+        msg!("Invalid public inputs length: {}", public_inputs.len());
+        return Err(ErrorCode::InvalidArgument.into());
+    }
+
+    // Slice out each 32-byte word
+    let null1: &[u8; 32] = public_inputs[0..32]
+        .try_into()
+        .expect("slice with correct length");
+    let null2: &[u8; 32] = public_inputs[32..64]
+        .try_into()
+        .expect("slice with correct length");
+    let new_leaf: &[u8; 32] = public_inputs[64..96]
+        .try_into()
+        .expect("slice with correct length");
+    let root: &[u8; 32] = public_inputs[96..128]
+        .try_into()
+        .expect("slice with correct length");
+
+    // Build the fixed‐size array reference for the verifier
+    let inputs_arr: &[[u8; 32]; 4] =
+        &[ *null1, *null2, *new_leaf, *root ];
+
+    // Deserialize πA with endianness fix
+    let proof_a: G1 = <G1 as FromBytes>::read(
+        &*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat()
+    ).unwrap();
+    let mut proof_a_neg = [0u8; 65];
+    <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
+    let proof_a = change_endianness(&proof_a_neg[..64])
+        .try_into()
+        .unwrap();
+
+    // πB and πC come directly
+    let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
+    let proof_c: [u8; 64]  = proof[192..256].try_into().unwrap();
+
+    // Run the verifier
+    let mut v = Groth16Verifier::new(
+        &proof_a,
+        &proof_b,
+        &proof_c,
+        inputs_arr,
+        &COMBINE_VERIFYINGKEY as &Groth16Verifyingkey,
+    )
+    .map_err(|_| ErrorCode::InvalidProof)?;
+
+    let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
+    require!(ok, ErrorCode::InvalidProof);
+    msg!("Combine proof successfully verified");
+
+    // Return the four public outputs
+    Ok((*null1, *null2, *new_leaf, *root))
+}
+
 
 pub fn enforce_sub_batch_memo(
     sysvar_account: &AccountInfo,

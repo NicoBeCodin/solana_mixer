@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::{ DEFAULT_LEAF, LEAVES_LENGTH, TARGET_DEPTH };
+use crate::{ utils::next_power_of_two_batch, DEFAULT_LEAF, LEAVES_LENGTH, TARGET_DEPTH };
 use solana_poseidon::{ Parameters, hashv, Endianness };
 use crate::utils::get_default_root_depth;
 
@@ -85,7 +85,28 @@ pub struct DepositVariable<'info> {
 
 }
 
+#[derive(Accounts)]
+pub struct CombineDeposit<'info> {
+    #[account(mut)]
+    pub pool: Account<'info, VariablePool>,
 
+    ///CHECK: Nullifier #1 PDA
+    #[account(mut)]
+    pub nullifier1_account: AccountInfo<'info>,
+
+    ///CHECK: Nullifier #2 PDA
+    #[account(mut)]
+    pub nullifier2_account: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    /// SYSVAR_INSTRUCTIONS must be passed to read the Memo
+    ///CHECK:
+    pub instruction_account: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
@@ -99,6 +120,8 @@ pub struct Deposit<'info> {
     pub instruction_account: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
+
+
 
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
@@ -154,7 +177,7 @@ pub struct Pool {
 #[account]
 pub struct VariablePool {
     /// Current merkle root after all deposits
-    pub merkle_root_batch: [u8; 32], //8 + 32 + 512 + 16 + 32 + 8 + 8 + 32 + 8 + 512 + 16 + 1 + 4
+    pub merkle_root_batch: [u8; 32],
     /// Leaves array of size 16
     pub batch_leaves: [[u8; 32]; 16],
     // Set of used nullifiers to prevent double-withdraw
@@ -336,8 +359,12 @@ impl VariablePool {
         }
         hashed
     }
+    pub fn compare_to_deep(&self, user_root: [u8;32])->bool{
+        let current_depth = next_power_of_two_batch(self.batch_number as usize);
+        let deep_root= self.deepen(current_depth, TARGET_DEPTH);
+        return user_root==deep_root
+    }
 }
-
 
 
 
@@ -485,7 +512,7 @@ impl Pool {
         // Return the computed root.
         nodes[0].0
     }
-
+        
     //this method allows
     pub fn deepen(&self, current_depth: usize, wanted_depth: usize) -> [u8; 32] {
         let mut default_hash = get_default_root_depth(current_depth);

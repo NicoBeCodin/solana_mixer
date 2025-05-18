@@ -21,7 +21,7 @@ pub const DEFAULT_LEAF_HASH: [u8; 32] = [
     42, 9, 169, 253, 147, 197, 144, 194, 107, 145, 239, 251, 178, 73, 159, 7, 232, 247, 170, 18,
     226, 180, 148, 10, 58, 237, 36, 17, 203, 101, 225, 28,
 ]; //solana poseidon
-
+const MIN_PDA_SIZE: usize = 1;
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; // 10_000_000 Low for testing purposes
 const PROGRAM_FEE: u64 = 1_000_000; //0.001 SOL FEE PER WITHDRAWAL
@@ -32,11 +32,8 @@ const TARGET_DEPTH: usize = 20; //This means pools are capped to 256 leaves
                                 // declare_id!("URAeHt7FHf56ioY2XJNXbSx5Y3FbvQ9zeLGRpY1RiMD");
 declare_id!("FyAuPyboHtdnnqbcAhTXjKwXRNqxiWYK4Xwvc5Gtw8Ln");
 
-
-
 // const ADMIN_KEY: Pubkey = pubkey!("EJZQiTeikeg8zgU7YgRfwZCxc9GdhTsYR3fQrXv3uK9V");
 const ADMIN_KEY: Pubkey = pubkey!("BSpEVXMrA3C1myPSUmT8hQSecrvJaUin8vnQTfzGGf17");
-
 
 #[program]
 pub mod solnado {
@@ -95,7 +92,10 @@ pub mod solnado {
         Ok(())
     }
 
-    pub fn initialize_variable_pool(ctx: Context<InitializeVariablePool>, identifier: [u8;16]) -> Result<()> {
+    pub fn initialize_variable_pool(
+        ctx: Context<InitializeVariablePool>,
+        identifier: [u8; 16],
+    ) -> Result<()> {
         msg!("Initializing a variable pool, will be used for variable amounts deposits");
 
         let pool = &mut ctx.accounts.pool;
@@ -113,7 +113,6 @@ pub mod solnado {
         pool.max_leaves = (2_u32).pow(TARGET_DEPTH as u32) as u32;
         pool.min_deposit_amount = 10_000_000;
         // At least a 0.01 SOL DEPOSIT per action of use
-        
 
         msg!(
             "Pool initialized by signer: {}\n
@@ -135,19 +134,19 @@ pub mod solnado {
 
     pub fn deposit_variable(
         ctx: Context<DepositVariable>,
-        proof: [u8;256],
-        public_inputs: [u8;96],
+        proof: [u8; 256],
+        public_inputs: [u8; 96],
     ) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
         let depositor_ai = ctx.accounts.depositor.to_account_info();
         let pool_ai = pool.to_account_info();
         let sysvar_ai = &ctx.accounts.instruction_account;
-    
+
         // 1) Verify ZK proof and unpack
         let (sum_be, leaf1, leaf2) = verify_deposit_proof(&proof, &public_inputs)?;
         let deposit_sum = u64::from_be_bytes(sum_be[24..32].try_into().unwrap());
         msg!("🔐 Proof ok — depositing {} lamports", deposit_sum);
-    
+
         // 2) Transfer lamports
         invoke(
             &system_instruction::transfer(
@@ -155,100 +154,415 @@ pub mod solnado {
                 &pool_ai.key(),
                 deposit_sum,
             ),
-            &[depositor_ai.clone(), pool_ai.clone(), ctx.accounts.system_program.to_account_info()],
+            &[
+                depositor_ai.clone(),
+                pool_ai.clone(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
         )?;
     
-        //All of this is assuming you can only deposit with 2 leaves
-        // 3) Insert leaves in 8-leaf windows
-        let free = pool.find_first_match() as usize;
-        // --- Case A: both fit into current sub-batch without crossing ---
-        if free + 2 < SUB_BATCH_SIZE {
-            pool.batch_leaves[free]     = leaf1;
-            pool.batch_leaves[free + 1] = leaf2;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            return Ok(());
-        } else if free+1 < SUB_BATCH_SIZE {
-            // --- Case B: crossing first 8-leaf boundary (free < 8 < free+2) ---
+        let leaves = [leaf1, leaf2];
+        let mut idx = pool.find_first_match() as usize;
+        require!(idx + leaves.len() <= LEAVES_LENGTH, ErrorCode::InvalidIndexing);
     
-            // 1) insert first leaf
-            pool.batch_leaves[free] = leaf1;
+        for (i, leaf) in leaves.into_iter().enumerate() {
+            // 1) insert
+            pool.batch_leaves[idx] = leaf;
+            // 2) update root
             pool.merkle_root_batch = get_root(&pool.batch_leaves);
     
-            // 2) require memo over leaves[0..8]
-            msg!("Checking that memo is correct...");
-            enforce_sub_batch_memo(sysvar_ai, pool.batch_number, &pool.batch_leaves[0..SUB_BATCH_SIZE])?;
+            // 3) did we just cross the 8‐leaf mark?
+            if idx + 1 == SUB_BATCH_SIZE {
+                msg!("Enforcing first sub‐batch memo");
+                enforce_sub_batch_memo(sysvar_ai, pool.batch_number, &pool.batch_leaves[..SUB_BATCH_SIZE])?;
+            }
+            // 4) did we just fill up all 16 slots?
+            if idx + 1 == LEAVES_LENGTH {
+                msg!("Enforcing second sub‐batch memo");
+                enforce_sub_batch_memo(
+                    sysvar_ai,
+                    pool.batch_number,
+                    &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+                )?;
+                // rollover into peaks, bump batch_number, reset leaves
+                let batch_root = pool.merkle_root_batch;
+                pool.update_peaks(batch_root);
+                pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+                pool.whole_tree_root = pool.compute_root_from_peaks();
+                let depth = next_power_of_two_batch(pool.batch_number as usize);
+                let _deep_root = pool.deepen(depth, TARGET_DEPTH);
     
-            // 3) now insert second leaf at index 8
-            pool.batch_leaves[SUB_BATCH_SIZE] = leaf2;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            return Ok(());
-        }else if free+2==SUB_BATCH_SIZE{
-            //Case if 2 leaves are added to have 8 leaves
-
-            pool.batch_leaves[free]     = leaf1;
-            pool.batch_leaves[free + 1] = leaf2;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            msg!("Checking that memo is correct...");
-            enforce_sub_batch_memo(sysvar_ai, pool.batch_number, &pool.batch_leaves[0..SUB_BATCH_SIZE])?;
-            pool.merkle_root_batch =get_root(&pool.batch_leaves);
-            return Ok(())
-        }
-        // --- Case C: both fit entirely in second sub-batch (8 ≤ free and free+2 ≤ 16) ---
-        if free + 2 < LEAVES_LENGTH as usize {
-            pool.batch_leaves[free]     = leaf1;
-            pool.batch_leaves[free + 1] = leaf2;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            return Ok(());
+                pool.batch_leaves = default_leaves();
+                pool.merkle_root_batch = get_root(&pool.batch_leaves);
+                // after rollover, the *next* leaves go at slot 0
+                idx = 0;
+                continue;
+            }
+    
+            idx += 1;
         }
     
-        // --- Case D: final rollover (filling to ≥16) ---
-        // only possible if free == 15 (one slot) or free == 14 (two slots)
-        if free == LEAVES_LENGTH - 1 {
-            // insert first leaf at slot 15
-            pool.batch_leaves[free] = leaf1;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-    
-            // require memo over second sub-batch (leaves[8..16])
-            msg!("Checking that memo is correct...");
-            enforce_sub_batch_memo(sysvar_ai, pool.batch_number, &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH])?;
-    
-            // rollover full 16-leaf batch exactly as your original code
-            let batch_root = pool.merkle_root_batch;
-            pool.update_peaks(batch_root);
-            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
-            pool.whole_tree_root = pool.compute_root_from_peaks();
-            let depth = crate::utils::next_power_of_two_batch(pool.batch_number as usize);
-            let _ = pool.deepen(depth, crate::TARGET_DEPTH);
-    
-            // start fresh and insert second leaf
-            pool.batch_leaves = default_leaves();
-            pool.batch_leaves[0] = leaf2;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            return Ok(());
-        } else {
-            // free == 14: exactly two slots left in second sub-batch
-            pool.batch_leaves[free]     = leaf1;
-            pool.batch_leaves[free + 1] = leaf2;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-    
-            // require memo over second sub-batch
-            msg!("Checking that memo is correct...");
-            enforce_sub_batch_memo(sysvar_ai, pool.batch_number, &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH])?;
-    
-            // rollover
-            let batch_root = pool.merkle_root_batch;
-            pool.update_peaks(batch_root);
-            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
-            pool.whole_tree_root = pool.compute_root_from_peaks();
-            let depth = crate::utils::next_power_of_two_batch(pool.batch_number as usize);
-            let _ = pool.deepen(depth, crate::TARGET_DEPTH);
-    
-            // leave the new batch empty
-            pool.batch_leaves = default_leaves();
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            return Ok(());
-        }
+        Ok(())
     }
+
+    // pub fn deposit_variable(
+    //     ctx: Context<DepositVariable>,
+    //     proof: [u8; 256],
+    //     public_inputs: [u8; 96],
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+    //     let depositor_ai = ctx.accounts.depositor.to_account_info();
+    //     let pool_ai = pool.to_account_info();
+    //     let sysvar_ai = &ctx.accounts.instruction_account;
+
+    //     // 1) Verify ZK proof and unpack
+    //     let user_root: [u8;32] = public_inputs[64..96].try_into().expect("Failed converting type");
+    //     require!(pool.compare_to_deep(user_root), ErrorCode::InvalidPublicInputRoot);
+    //     let (sum_be, leaf1, leaf2) = verify_deposit_proof(&proof, &public_inputs)?;
+    //     let deposit_sum = u64::from_be_bytes(sum_be[24..32].try_into().unwrap());
+    //     msg!("🔐 Proof ok — depositing {} lamports", deposit_sum);
+
+    //     // 2) Transfer lamports
+    //     invoke(
+    //         &system_instruction::transfer(
+    //             &ctx.accounts.depositor.key(),
+    //             &pool_ai.key(),
+    //             deposit_sum,
+    //         ),
+    //         &[
+    //             depositor_ai.clone(),
+    //             pool_ai.clone(),
+    //             ctx.accounts.system_program.to_account_info(),
+    //         ],
+    //     )?;
+
+    //     //All of this is assuming you can only deposit with 2 leaves
+    //     // 3) Insert leaves in 8-leaf windows
+    //     let free = pool.find_first_match() as usize;
+    //     // --- Case A: both fit into current sub-batch without crossing ---
+    //     if free + 2 < SUB_BATCH_SIZE {
+    //         pool.batch_leaves[free] = leaf1;
+    //         pool.batch_leaves[free + 1] = leaf2;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         return Ok(());
+    //     } else if free + 2 == SUB_BATCH_SIZE {
+    //         //Case if 2 leaves are added to have 8 leaves
+
+    //         pool.batch_leaves[free] = leaf1;
+    //         pool.batch_leaves[free + 1] = leaf2;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         msg!("Checking that memo is correct...");
+    //         enforce_sub_batch_memo(
+    //             sysvar_ai,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[0..SUB_BATCH_SIZE],
+    //         )?;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         return Ok(());
+    //     }
+    //     else if free + 1 < SUB_BATCH_SIZE {
+    //         // --- Case B: crossing first 8-leaf boundary (free < 8 < free+2) ---
+
+    //         // 1) insert first leaf
+    //         pool.batch_leaves[free] = leaf1;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //         // 2) require memo over leaves[0..8]
+    //         msg!("Checking that memo is correct...");
+    //         enforce_sub_batch_memo(
+    //             sysvar_ai,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[0..SUB_BATCH_SIZE],
+    //         )?;
+
+    //         // 3) now insert second leaf at index 8
+    //         pool.batch_leaves[SUB_BATCH_SIZE] = leaf2;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         return Ok(());
+    //     } 
+    //     // --- Case C: both fit entirely in second sub-batch (8 ≤ free and free+2 ≤ 16) ---
+    //     if free + 2 < LEAVES_LENGTH as usize {
+    //         pool.batch_leaves[free] = leaf1;
+    //         pool.batch_leaves[free + 1] = leaf2;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         return Ok(());
+    //     }
+
+    //     // --- Case D: final rollover (filling to ≥16) ---
+    //     // only possible if free == 15 (one slot) or free == 14 (two slots)
+    //     if free == LEAVES_LENGTH - 1 {
+    //         // insert first leaf at slot 15
+    //         pool.batch_leaves[free] = leaf1;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //         // require memo over second sub-batch (leaves[8..16])
+    //         msg!("Checking that memo is correct...");
+    //         enforce_sub_batch_memo(
+    //             sysvar_ai,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+    //         )?;
+
+    //         // rollover full 16-leaf batch exactly as your original code
+    //         let batch_root = pool.merkle_root_batch;
+    //         pool.update_peaks(batch_root);
+    //         pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+    //         pool.whole_tree_root = pool.compute_root_from_peaks();
+    //         let depth = crate::utils::next_power_of_two_batch(pool.batch_number as usize);
+    //         let deepened_root = pool.deepen(depth, crate::TARGET_DEPTH);
+    //         msg!("Deepened root {:?}", deepened_root);
+
+    //         // start fresh and insert second leaf
+    //         pool.batch_leaves = default_leaves();
+    //         pool.batch_leaves[0] = leaf2;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+            
+
+    //         Ok(())
+            
+    //     } else {
+    //         // free == 14: exactly two slots left in second sub-batch
+    //         pool.batch_leaves[free] = leaf1;
+    //         pool.batch_leaves[free + 1] = leaf2;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //         // require memo over second sub-batch
+    //         msg!("Checking that memo is correct...");
+    //         enforce_sub_batch_memo(
+    //             sysvar_ai,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+    //         )?;
+
+    //         // rollover
+    //         let batch_root = pool.merkle_root_batch;
+    //         pool.update_peaks(batch_root);
+    //         pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+    //         pool.whole_tree_root = pool.compute_root_from_peaks();
+    //         let depth = crate::utils::next_power_of_two_batch(pool.batch_number as usize);
+    //         let deepened_root = pool.deepen(depth, crate::TARGET_DEPTH);
+    //         msg!("Deepened root {:?}", deepened_root);
+
+    //         // leave the new batch empty
+    //         pool.batch_leaves = default_leaves();
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         return Ok(());
+    //     }
+    // }
+
+    pub fn combine_deposit(
+        ctx: Context<CombineDeposit>,
+        proof: [u8; 256],
+        public_inputs: [u8; 128],
+    ) -> Result<()> {
+        let pool = &mut ctx.accounts.pool;
+        let sysvar_ai = &ctx.accounts.instruction_account;
+    
+        // … proof‐verify, nullifier PDAs …
+        let (null1, null2, new_leaf, root) =
+        verify_combine_proof(&proof, &public_inputs).map_err(|_| ErrorCode::InvalidProof)?;
+        require!(pool.compare_to_deep(root), ErrorCode::InvalidPublicInputRoot);
+        
+        // 2) Nullifier #1 PDA
+        let (pda1, bump1) = Pubkey::find_program_address(&[&null1], ctx.program_id);
+        require!(
+            pda1 == *ctx.accounts.nullifier1_account.key,
+            ErrorCode::InvalidNullifierAccount
+        );
+        require!(
+            ctx.accounts.nullifier1_account.lamports() == 0,
+            ErrorCode::NullifierAlreadyUsed
+        );
+        invoke_signed(
+            &system_instruction::create_account(
+                &ctx.accounts.user.key(),
+                &pda1,
+                Rent::get()?.minimum_balance(2),
+                8,
+                ctx.program_id,
+            ),
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.nullifier1_account.clone(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            &[&[&null1, &[bump1]]],
+        )?;
+
+        // 3) Nullifier #2 PDA
+        let (pda2, bump2) = Pubkey::find_program_address(&[&null2], ctx.program_id);
+        require!(
+            pda2 == *ctx.accounts.nullifier2_account.key,
+            ErrorCode::InvalidNullifierAccount
+        );
+        require!(
+            ctx.accounts.nullifier2_account.lamports() == 0,
+            ErrorCode::NullifierAlreadyUsed
+        );
+        invoke_signed(
+            &system_instruction::create_account(
+                &ctx.accounts.user.key(),
+                &pda2,
+                Rent::get()?.minimum_balance(2),
+                8,
+                ctx.program_id,
+            ),
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.nullifier2_account.clone(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            &[&[&null2, &[bump2]]],
+        )?;
+    
+        
+        let mut idx = pool.find_first_match() as usize;
+        require!(idx < LEAVES_LENGTH, ErrorCode::InvalidIndexing);
+    
+        // Insert exactly one leaf
+        pool.batch_leaves[idx] = new_leaf;
+        pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    
+        // If we just hit slot 7 or 15, enforce a memo
+        if idx + 1 == SUB_BATCH_SIZE {
+            msg!("Enforcing first sub‐batch memo");
+            enforce_sub_batch_memo(sysvar_ai, pool.batch_number, &pool.batch_leaves[..SUB_BATCH_SIZE])?;
+        } else if idx + 1 == LEAVES_LENGTH {
+            msg!("Enforcing second sub‐batch memo");
+            enforce_sub_batch_memo(
+                sysvar_ai,
+                pool.batch_number,
+                &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+            )?;
+            // then rollover exactly as before
+            let batch_root = pool.merkle_root_batch;
+            pool.update_peaks(batch_root);
+            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+            pool.whole_tree_root = pool.compute_root_from_peaks();
+            let depth = next_power_of_two_batch(pool.batch_number as usize);
+            let _deep = pool.deepen(depth, TARGET_DEPTH);
+            pool.batch_leaves = default_leaves();
+            pool.merkle_root_batch = get_root(&pool.batch_leaves);
+        }
+    
+        Ok(())
+    }
+
+    //Proof inclusion of two leaves, add 1 leaf to tree
+    // pub fn combine_deposit(
+    //     ctx: Context<CombineDeposit>,
+    //     proof: [u8; 256],
+    //     public_inputs: [u8; 128],
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+
+        
+    //     // 1) Verify and unpack proof
+    //     let (null1, null2, new_leaf, root) =
+    //     verify_combine_proof(&proof, &public_inputs).map_err(|_| ErrorCode::InvalidProof)?;
+    //     require!(pool.compare_to_deep(root), ErrorCode::InvalidPublicInputRoot);
+        
+    //     // 2) Nullifier #1 PDA
+    //     let (pda1, bump1) = Pubkey::find_program_address(&[&null1], ctx.program_id);
+    //     require!(
+    //         pda1 == *ctx.accounts.nullifier1_account.key,
+    //         ErrorCode::InvalidNullifierAccount
+    //     );
+    //     require!(
+    //         ctx.accounts.nullifier1_account.lamports() == 0,
+    //         ErrorCode::NullifierAlreadyUsed
+    //     );
+    //     invoke_signed(
+    //         &system_instruction::create_account(
+    //             &ctx.accounts.user.key(),
+    //             &pda1,
+    //             Rent::get()?.minimum_balance(2),
+    //             8,
+    //             ctx.program_id,
+    //         ),
+    //         &[
+    //             ctx.accounts.user.to_account_info(),
+    //             ctx.accounts.nullifier1_account.clone(),
+    //             ctx.accounts.system_program.to_account_info(),
+    //         ],
+    //         &[&[&null1, &[bump1]]],
+    //     )?;
+
+    //     // 3) Nullifier #2 PDA
+    //     let (pda2, bump2) = Pubkey::find_program_address(&[&null2], ctx.program_id);
+    //     require!(
+    //         pda2 == *ctx.accounts.nullifier2_account.key,
+    //         ErrorCode::InvalidNullifierAccount
+    //     );
+    //     require!(
+    //         ctx.accounts.nullifier2_account.lamports() == 0,
+    //         ErrorCode::NullifierAlreadyUsed
+    //     );
+    //     invoke_signed(
+    //         &system_instruction::create_account(
+    //             &ctx.accounts.user.key(),
+    //             &pda2,
+    //             Rent::get()?.minimum_balance(2),
+    //             8,
+    //             ctx.program_id,
+    //         ),
+    //         &[
+    //             ctx.accounts.user.to_account_info(),
+    //             ctx.accounts.nullifier2_account.clone(),
+    //             ctx.accounts.system_program.to_account_info(),
+    //         ],
+    //         &[&[&null2, &[bump2]]],
+    //     )?;
+
+    //     // 4) Determine where the new leaf would land
+    //     let free = pool.find_first_match() as usize;
+    //     require!(free < LEAVES_LENGTH, ErrorCode::InvalidIndexing);
+
+    //     // 5) If crossing the first 8-leaf boundary:
+    //     if free == 7 {
+    //         pool.batch_leaves[free] = new_leaf;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //         msg!("Enforcing first sub-batch memo");
+    //         enforce_sub_batch_memo(
+    //             &ctx.accounts.instruction_account,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[0..SUB_BATCH_SIZE],
+    //         )?;
+    //     }
+    //     // 6) If crossing the second (16-leaf) boundary:
+    //     else if free == 15 {
+    //         pool.batch_leaves[free] = new_leaf;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         msg!("Enforcing second sub-batch memo");
+    //         enforce_sub_batch_memo(
+    //             &ctx.accounts.instruction_account,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+    //         )?;
+
+    //         pool.batch_leaves[free] = new_leaf;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //         // rollover
+    //         let batch_root = pool.merkle_root_batch;
+    //         pool.update_peaks(batch_root);
+    //         pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+    //         pool.whole_tree_root = pool.compute_root_from_peaks();
+    //         let depth = crate::utils::next_power_of_two_batch(pool.batch_number as usize);
+    //         let _ = pool.deepen(depth, crate::TARGET_DEPTH);
+
+    //         // leave the new batch empty
+    //         pool.batch_leaves = default_leaves();
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //     } else {
+    //         pool.batch_leaves[free] = new_leaf;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //     }
+
+    //     Ok(())
+    // }
+
     pub fn deposit(
         ctx: Context<Deposit>,
         leaf_hash: [u8; 32], //leaves_info: [u8; 520]
@@ -263,10 +577,8 @@ pub mod solnado {
         // Load the full instruction list (memo should be at index 0 based on your tx order)
         let maybe_memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
 
-        // msg!("Instruction details of this transaction: {:?}", maybe_memo_ix);
-
         // Verify that it's the Memo program
-        let memo_program_id =pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+        let memo_program_id = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
         if maybe_memo_ix.program_id != memo_program_id {
             msg!("First instruction is not a Memo, skipping decoding");
             return Err(ErrorCode::MissingMemoInstruction.into());
@@ -434,13 +746,13 @@ pub mod solnado {
         // Otherwise, create the account.
         // (Assume a minimal account size of 8 bytes; adjust as needed.)
         let rent = Rent::get()?;
-        let space = 8;
-        let rent_lamports = rent.minimum_balance(space);
+
+        let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
         let create_ix = system_instruction::create_account(
             &ctx.accounts.withdrawer.key(), // payer
             &nullifier_pda,                 // new account address
             rent_lamports,
-            space as u64,
+            MIN_PDA_SIZE as u64,
             ctx.program_id, // owner: our program
         );
         let seeds = &[nullifier_hash.as_ref(), &[bump]];
@@ -459,7 +771,7 @@ pub mod solnado {
         **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
 
         // Mark the PDA as rent-exempt by allocating space & assigning ownership
-        ctx.accounts.nullifier_account.realloc(space, false)?;
+        ctx.accounts.nullifier_account.realloc(MIN_PDA_SIZE, false)?;
         ctx.accounts.nullifier_account.assign(ctx.program_id);
 
         let depth = next_power_of_two_batch(pool.batch_number as usize);
