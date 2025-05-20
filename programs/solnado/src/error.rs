@@ -79,6 +79,8 @@ pub enum ErrorCode {
 
     #[msg("Invalid pool creator")]
     InvalidPoolCreator,
-    
+
+    #[msg("Invalid PDA")]
+    InvalidPDA    
 
 }

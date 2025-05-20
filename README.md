@@ -40,3 +40,23 @@ This software is provided under the MIT License.
 However, commercial use of this software is strictly prohibited without explicit written permission from the author
 
 ---
+
+
+## TODO List
+
+- Implement smart parsing with custom PDAs (max 10 calls )
+- Implement the other party withdrawal system for withdrawals
+- Allow for different combine deposit leaf patterns
+- Change the circom circuits to reject negative values
+- Implement the chacha signatures schemes
+
+
+- Refactor the project, more streamlining
+- optimize CU usage
+- Optimize transaction instruction size
+  - When adding two leaves and a note, at least one of the leaves doesn't have to be in the memo and instruction
+  - u64 in the note is too much for a number
+  - utf8 is badly encoded for raw bytes
+  - 
+
+- Redesign the fixed deposit amount pools

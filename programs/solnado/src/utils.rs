@@ -263,6 +263,74 @@ pub fn verify_combine_proof(
 }
 
 
+/// Unpacks & verifies a single‐leaf Merkle‐inclusion proof for withdrawal.
+/// Expects `public_inputs = secret_be || nullifier_hash_be || root_be`, each 32 bytes.
+pub fn verify_withdraw_proof(
+    proof: &[u8;256],
+    public_inputs: &[u8;96],
+) -> Result<([u8;32], [u8;32], [u8;32])> {
+    // 1) chop into three 32-byte slices
+    // let mut secret_be         = [0u8;32];
+    // let mut nullifier_hash_be = [0u8;32];
+    // let mut root_be           = [0u8;32];
+    // secret_be.copy_from_slice(&public_inputs[ 0.. 32]);
+    // nullifier_hash_be.copy_from_slice(&public_inputs[32.. 64]);
+    // root_be.copy_from_slice(&public_inputs[64.. 96]);
+
+    // // 2) build the array of public signals
+    // let inputs: &[[u8;32];3] = &[
+    //     secret_be,
+    //     nullifier_hash_be,
+    //     root_be,
+    // ];
+
+    
+    // Slice out each 32-byte word
+    let secret: &[u8; 32] = public_inputs[0..32]
+        .try_into()
+        .expect("slice with correct length");
+    let nullifier: &[u8; 32] = public_inputs[32..64]
+        .try_into()
+        .expect("slice with correct length");
+    let root: &[u8; 32] = public_inputs[64..96]
+        .try_into()
+        .expect("slice with correct length");
+
+
+        let inputs_arr: &[[u8; 32]; 3] =
+        &[ *secret, *nullifier, *root ];
+
+    // Deserialize πA with endianness fix
+    let proof_a: G1 = <G1 as FromBytes>::read(
+        &*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat()
+    ).unwrap();
+    let mut proof_a_neg = [0u8; 65];
+    <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
+    let proof_a: [u8;64] = change_endianness(&proof_a_neg[..64])
+        .try_into()
+        .unwrap();
+
+    // πB and πC come directly
+    let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
+    let proof_c: [u8; 64]  = proof[192..256].try_into().unwrap();
+
+    let mut v = Groth16Verifier::new(
+        &proof_a,
+        &proof_b,
+        &proof_c,
+        inputs_arr,
+        &WITHDRAW_VAR_VK as &Groth16Verifyingkey,
+    )
+    .map_err(|_| ErrorCode::InvalidProof)?;
+
+    let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
+    require!(ok, ErrorCode::InvalidProof);
+    msg!("Combine proof successfully verified");
+
+    Ok((*secret, *nullifier, *root))
+}
+
+/// Checks that the subbatch memo is correct, essential for easy parsing
 pub fn enforce_sub_batch_memo(
     sysvar_account: &AccountInfo,
     batch_number: u64,
@@ -301,3 +369,4 @@ pub fn enforce_sub_batch_memo(
     }
     Ok(())
 }
+

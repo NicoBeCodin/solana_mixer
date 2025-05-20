@@ -40,6 +40,8 @@ pub struct InitializeVariablePool<'info> {
     pub system_program: Program<'info, System>,
 }
 
+
+
 #[derive(Accounts)]
 #[instruction()]
 pub struct InitializeTreasury<'info> {
@@ -105,6 +107,30 @@ pub struct CombineDeposit<'info> {
     ///CHECK:
     pub instruction_account: AccountInfo<'info>,
 
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawVariable<'info> {
+    /// Our on‐chain pool state
+    #[account(
+        mut,
+        seeds = [ b"variable_pool", pool.identifier.as_ref() ],
+        bump,           // assumes you store `bump: u8` in your pool struct
+      )]
+    pub pool: Account<'info, VariablePool>,
+
+    /// The user who is withdrawing
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    /// A PDA whose seed is exactly the 32‐byte nullifier hash.
+    /// We create it here (with size=0) to mark “this nullifier was spent.”
+    /// CHECK: we're only using this for lamport‐zero and PDA‐existence checks.
+    #[account(mut)]
+    pub nullifier_account: AccountInfo<'info>,
+
+    /// System program (for create_account + transfer)
     pub system_program: Program<'info, System>,
 }
 
@@ -253,8 +279,8 @@ impl VariablePool {
             let left = peak_hashes[(count - 2) as usize];
             let right = peak_hashes[(count - 1) as usize];
             let merged_hash = hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&left, &right])
-                .unwrap()
-                .to_bytes();
+                .unwrap().to_bytes();
+                
             let merged_depth = peak_depths[(count - 1) as usize] + 1;
             peak_hashes[(count - 2) as usize] = merged_hash;
             peak_depths[(count - 2) as usize] = merged_depth;
@@ -362,7 +388,11 @@ impl VariablePool {
     pub fn compare_to_deep(&self, user_root: [u8;32])->bool{
         let current_depth = next_power_of_two_batch(self.batch_number as usize);
         let deep_root= self.deepen(current_depth, TARGET_DEPTH);
-        return user_root==deep_root
+        if !(user_root==deep_root){
+            msg!("user root: {:?} \n deep_root: {:?}", user_root, deep_root);
+            return false
+        }
+        return true
     }
 }
 
@@ -531,6 +561,11 @@ impl Pool {
                 .to_bytes();
         }
         hashed
+    }
+    pub fn compare_to_deep(&self, user_root: [u8;32])->bool{
+        let current_depth = next_power_of_two_batch(self.batch_number as usize);
+        let deep_root= self.deepen(current_depth, TARGET_DEPTH);
+        return user_root==deep_root
     }
 }
 
