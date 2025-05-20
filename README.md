@@ -44,7 +44,7 @@ However, commercial use of this software is strictly prohibited without explicit
 
 ## TODO List
 
-- Implement smart parsing with custom PDAs (max 10 calls )
+- Implement smart parsing with custom PDAs (max 10 calls)
 - Implement the other party withdrawal system for withdrawals
 - Allow for different combine deposit leaf patterns
 - Change the circom circuits to reject negative values
