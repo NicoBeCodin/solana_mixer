@@ -51,12 +51,12 @@ However, commercial use of this software is strictly prohibited without explicit
 - Implement the chacha signatures schemes
 
 
+
 - Refactor the project, more streamlining
 - optimize CU usage
 - Optimize transaction instruction size
   - When adding two leaves and a note, at least one of the leaves doesn't have to be in the memo and instruction
   - u64 in the note is too much for a number
-  - utf8 is badly encoded for raw bytes
-  - 
+  - the user puts the root that he wants to compare to this can be useful in the future
 
-- Redesign the fixed deposit amount pools
+

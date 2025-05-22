@@ -81,6 +81,13 @@ pub enum ErrorCode {
     InvalidPoolCreator,
 
     #[msg("Invalid PDA")]
-    InvalidPDA    
+    InvalidPDA,
+
+    #[msg("Invalid small tree root")]
+    InvalidSmallTreeRoot,
+
+    #[msg("Invalid indexer account")]
+    InvalidIndexerAccount,
+
 
 }
