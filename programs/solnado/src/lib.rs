@@ -313,125 +313,271 @@ pub mod solnado {
     }
 
     //This could be derived with anchor constraints but this leads to stack size blow up (+64 bytes)
+    // pub fn combine_deposit(
+    //     ctx: Context<CombineDeposit>,
+    //     proof: [u8; 256],
+    //     public_inputs: [u8;128]
+        
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+    //     let sysvar_ai = &ctx.accounts.instruction_account;
+        
+    //         let null1: &[u8; 32] = public_inputs[0..32]
+    //     .try_into()
+    //     .expect("slice with correct length");
+    // let null2: &[u8; 32] = public_inputs[32..64]
+    //     .try_into()
+    //     .expect("slice with correct length");
+    // let new_leaf: &[u8; 32] = public_inputs[0..32]
+    //     .try_into()
+    //     .expect("slice with correct length");
+    // let root: &[u8; 32] = public_inputs[32..64]
+    //     .try_into()
+    //     .expect("slice with correct length");
+
+    //     verify_combine_proof(&proof, *null1, *null2, *new_leaf, *root).map_err(|_| ErrorCode::InvalidProof)?;
+    //     require!(
+    //         pool.compare_to_deep(*root),
+    //         ErrorCode::InvalidPublicInputRoot
+    //     );
+    //     // 2) Nullifier #1 PDA
+    //     let (pda1, bump1) = Pubkey::find_program_address(&[null1.as_ref()], ctx.program_id);
+    //     require!(
+    //         pda1 == *ctx.accounts.nullifier1_account.key,
+    //         ErrorCode::InvalidNullifierAccount
+    //     );
+    //     require!(
+    //         ctx.accounts.nullifier1_account.lamports() == 0,
+    //         ErrorCode::NullifierAlreadyUsed
+    //     );
+    //     invoke_signed(
+    //         &system_instruction::create_account(
+    //             &ctx.accounts.user.key(),
+    //             &pda1,
+    //             Rent::get()?.minimum_balance(MIN_PDA_SIZE),
+    //             MIN_PDA_SIZE as u64,
+    //             ctx.program_id,
+    //         ),
+    //         &[
+    //             ctx.accounts.user.to_account_info(),
+    //             ctx.accounts.nullifier1_account.clone(),
+    //             ctx.accounts.system_program.to_account_info(),
+    //         ],
+    //         &[&[null1.as_ref(), &[bump1]]],
+    //     )?;
+
+    //     // 3) Nullifier #2 PDA
+    //     let (pda2, bump2) = Pubkey::find_program_address(&[null2.as_ref()], ctx.program_id);
+    //     require!(
+    //         pda2 == *ctx.accounts.nullifier2_account.key,
+    //         ErrorCode::InvalidNullifierAccount
+    //     );
+    //     require!(
+    //         ctx.accounts.nullifier2_account.lamports() == 0,
+    //         ErrorCode::NullifierAlreadyUsed
+    //     );
+    //     invoke_signed(
+    //         &system_instruction::create_account(
+    //             &ctx.accounts.user.key(),
+    //             &pda2,
+    //             Rent::get()?.minimum_balance(MIN_PDA_SIZE),
+    //             MIN_PDA_SIZE as u64,
+    //             ctx.program_id,
+    //         ),
+    //         &[
+    //             ctx.accounts.user.to_account_info(),
+    //             ctx.accounts.nullifier2_account.clone(),
+    //             ctx.accounts.system_program.to_account_info(),
+    //         ],
+    //         &[&[null2.as_ref(), &[bump2]]],
+    //     )?;
+
+    //     let mut idx = pool.find_first_match() as usize;
+    //     require!(idx < LEAVES_LENGTH, ErrorCode::InvalidIndexing);
+
+    //     // Insert exactly one leaf
+    //     pool.batch_leaves[idx] = *new_leaf;
+    //     pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //     // If we just hit slot 7 or 15, enforce a memo
+    //     if idx + 1 == SUB_BATCH_SIZE {
+    //         msg!("Enforcing first sub‐batch memo");
+    //         enforce_sub_batch_memo(
+    //             sysvar_ai,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[..SUB_BATCH_SIZE],
+    //         )?;
+    //     } else if idx + 1 == LEAVES_LENGTH {
+    //         msg!("Enforcing second sub‐batch memo");
+    //         enforce_sub_batch_memo(
+    //             sysvar_ai,
+    //             pool.batch_number,
+    //             &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+    //         )?;
+    //         // then rollover exactly as before
+    //         let batch_root = pool.merkle_root_batch;
+    //         pool.update_peaks(batch_root);
+    //         pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+    //         pool.whole_tree_root = pool.compute_root_from_peaks();
+    //         let depth = next_power_of_two_batch(pool.batch_number as usize);
+    //         let _deep = pool.deepen(depth, TARGET_DEPTH);
+    //         pool.batch_leaves = default_leaves();
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //     }
+
+    //     Ok(())
+    // }
+
     pub fn combine_deposit(
         ctx: Context<CombineDeposit>,
+        mode: u8,
         proof: [u8; 256],
-        public_inputs: [u8;128]
-        
+        public_inputs: Vec<u8>,
     ) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-        let sysvar_ai = &ctx.accounts.instruction_account;
-        
-            let null1: &[u8; 32] = public_inputs[0..32]
-        .try_into()
-        .expect("slice with correct length");
-    let null2: &[u8; 32] = public_inputs[32..64]
-        .try_into()
-        .expect("slice with correct length");
-    let new_leaf: &[u8; 32] = public_inputs[0..32]
-        .try_into()
-        .expect("slice with correct length");
-    let root: &[u8; 32] = public_inputs[32..64]
-        .try_into()
-        .expect("slice with correct length");
-
-        verify_combine_proof(&proof, *null1, *null2, *new_leaf, *root).map_err(|_| ErrorCode::InvalidProof)?;
+        let pool    = &mut ctx.accounts.pool;
+        let sysvar  = &ctx.accounts.instruction_account;
+    
+        //
+        // 1) Decode & verify, unpack nullifiers and new leaf( s ) + root
+        //
+        // (you’ll implement these three functions to match your circom)
+        let (nulls, new_leaves, root) = match mode {
+            0 => {
+                // --- two nullifiers → one leaf (old behavior) ---
+                let (n1, n2, leaf, r) =
+                    verify_combine_proof(&proof, &public_inputs)
+                        .map_err(|_| ErrorCode::InvalidProof)?;
+                (vec![n1, n2], vec![leaf], r)
+            }
+            1 => {
+                // --- one nullifier → two leaves ---
+                // dummy placeholder: user to implement
+                let (n, leaf1, leaf2, r) =
+                    verify_one_null_two_leaves(&proof, &public_inputs)
+                        .map_err(|_| ErrorCode::InvalidProof)?;
+                (vec![n], vec![leaf1, leaf2], r)
+            }
+            2 => {
+                // --- two nullifiers → two leaves ---
+                // dummy placeholder: user to implement
+                let (n1, n2, leaf1, leaf2, r) =
+                    verify_two_null_two_leaves(&proof, &public_inputs)
+                        .map_err(|_| ErrorCode::InvalidProof)?;
+                (vec![n1, n2], vec![leaf1, leaf2], r)
+            }
+            _ => return Err(ErrorCode::InvalidArgument.into()),
+        };
+    
+        // 2) Root must match on‐chain deep root
         require!(
-            pool.compare_to_deep(*root),
+            pool.compare_to_deep(root),
             ErrorCode::InvalidPublicInputRoot
         );
-        // 2) Nullifier #1 PDA
-        let (pda1, bump1) = Pubkey::find_program_address(&[null1.as_ref()], ctx.program_id);
-        require!(
-            pda1 == *ctx.accounts.nullifier1_account.key,
-            ErrorCode::InvalidNullifierAccount
-        );
-        require!(
-            ctx.accounts.nullifier1_account.lamports() == 0,
-            ErrorCode::NullifierAlreadyUsed
-        );
-        invoke_signed(
-            &system_instruction::create_account(
-                &ctx.accounts.user.key(),
-                &pda1,
-                Rent::get()?.minimum_balance(MIN_PDA_SIZE),
-                MIN_PDA_SIZE as u64,
-                ctx.program_id,
-            ),
-            &[
-                ctx.accounts.user.to_account_info(),
-                ctx.accounts.nullifier1_account.clone(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[&[null1.as_ref(), &[bump1]]],
-        )?;
-
-        // 3) Nullifier #2 PDA
-        let (pda2, bump2) = Pubkey::find_program_address(&[null2.as_ref()], ctx.program_id);
-        require!(
-            pda2 == *ctx.accounts.nullifier2_account.key,
-            ErrorCode::InvalidNullifierAccount
-        );
-        require!(
-            ctx.accounts.nullifier2_account.lamports() == 0,
-            ErrorCode::NullifierAlreadyUsed
-        );
-        invoke_signed(
-            &system_instruction::create_account(
-                &ctx.accounts.user.key(),
-                &pda2,
-                Rent::get()?.minimum_balance(MIN_PDA_SIZE),
-                MIN_PDA_SIZE as u64,
-                ctx.program_id,
-            ),
-            &[
-                ctx.accounts.user.to_account_info(),
-                ctx.accounts.nullifier2_account.clone(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[&[null2.as_ref(), &[bump2]]],
-        )?;
-
+    
+        // 3) For each nullifier, create its PDA
+        //    (we expect ctx.accounts.nullifier1_account, maybe nullifier2_account)
+        for (i, n) in nulls.iter().enumerate() {
+            let expected = Pubkey::find_program_address(&[n], ctx.program_id).0;
+            let acct = match i {
+                0 => &ctx.accounts.nullifier1_account,
+                1 => &ctx.accounts.nullifier2_account,
+                _ => unreachable!(),
+            };
+            require!(
+                expected == *acct.key,
+                ErrorCode::InvalidNullifierAccount
+            );
+            require!(
+                acct.lamports() == 0,
+                ErrorCode::NullifierAlreadyUsed
+            );
+            let bump = Pubkey::find_program_address(&[n], ctx.program_id).1;
+            invoke_signed(
+                &system_instruction::create_account(
+                    &ctx.accounts.user.key(),
+                    &expected,
+                    Rent::get()?.minimum_balance(MIN_PDA_SIZE),
+                    MIN_PDA_SIZE as u64,
+                    ctx.program_id,
+                ),
+                &[
+                    ctx.accounts.user.to_account_info(),
+                    acct.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+                &[&[n.as_ref(), &[bump]]],
+            )?;
+        }
+    
+        //
+        // 4) Insert new_leaf(s) into the batch, same sub-batch/memo logic
+        //
         let mut idx = pool.find_first_match() as usize;
         require!(idx < LEAVES_LENGTH, ErrorCode::InvalidIndexing);
-
-        // Insert exactly one leaf
-        pool.batch_leaves[idx] = *new_leaf;
-        pool.merkle_root_batch = get_root(&pool.batch_leaves);
-
-        // If we just hit slot 7 or 15, enforce a memo
-        if idx + 1 == SUB_BATCH_SIZE {
-            msg!("Enforcing first sub‐batch memo");
-            enforce_sub_batch_memo(
-                sysvar_ai,
-                pool.batch_number,
-                &pool.batch_leaves[..SUB_BATCH_SIZE],
-            )?;
-        } else if idx + 1 == LEAVES_LENGTH {
-            msg!("Enforcing second sub‐batch memo");
-            enforce_sub_batch_memo(
-                sysvar_ai,
-                pool.batch_number,
-                &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
-            )?;
-            // then rollover exactly as before
-            let batch_root = pool.merkle_root_batch;
-            pool.update_peaks(batch_root);
-            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
-            pool.whole_tree_root = pool.compute_root_from_peaks();
-            let depth = next_power_of_two_batch(pool.batch_number as usize);
-            let _deep = pool.deepen(depth, TARGET_DEPTH);
-            pool.batch_leaves = default_leaves();
+    
+        for leaf in new_leaves {
+            pool.batch_leaves[idx] = leaf;
             pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    
+            // a) first sub‐batch boundary?
+            if idx + 1 == SUB_BATCH_SIZE {
+                let expected_idxr = Pubkey::find_program_address(&[b"leaves_indexer", &pool.identifier], ctx.program_id).0;
+                require!(
+                    expected_idxr == *ctx.remaining_accounts[0].key,
+                    ErrorCode::InvalidIndexerAccount
+                );
+                enforce_sub_batch_memo(
+                    &sysvar,
+                    pool.batch_number,
+                    &pool.batch_leaves[..SUB_BATCH_SIZE],
+                )?;
+            }
+            // b) second boundary → rollover
+            else if idx + 1 == LEAVES_LENGTH {
+                let expected_idxr = Pubkey::find_program_address(&[b"leaves_indexer", &pool.identifier], ctx.program_id).0;
+                require!(
+                    expected_idxr == *ctx.remaining_accounts[0].key,
+                    ErrorCode::InvalidIndexerAccount
+                );
+                enforce_sub_batch_memo(
+                    &sysvar,
+                    pool.batch_number,
+                    &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+                )?;
+    
+                // rollover:
+                let batch_root = pool.merkle_root_batch;
+                pool.update_peaks(batch_root);
+                pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+                pool.whole_tree_root = pool.compute_root_from_peaks();
+    
+                // c) small‐tree boundary?
+                if pool.batch_number % BATCHES_PER_SMALL_TREE == 0 {
+                    let expected_st_idxr = Pubkey::find_program_address(&[b"subtree_indexer", &pool.identifier], ctx.program_id).0;
+                    require!(
+                        expected_st_idxr == *ctx.remaining_accounts[1].key,
+                        ErrorCode::InvalidIndexerAccount
+                    );
+                    enforce_small_tree_memo(
+                        &sysvar,
+                        pool.batch_number - 1,
+                        pool.last_small_tree_root,
+                    )?;
+                }
+    
+                // reset for next batch
+                pool.batch_leaves = default_leaves();
+                pool.merkle_root_batch = get_root(&pool.batch_leaves);
+                idx = 0;
+                continue;
+            }
+    
+            idx += 1;
         }
-
+    
         Ok(())
     }
-
-    //1 leaf to 2
-    // pub fn combine_deposit_other(ctx: Context<CombineDeposit>)->Result<()>{
-    //     todo!()
-    // }
+    
 
     // pub fn withdraw_variable_on_behalf(ctx: Context<WithdrawVariableOnBehalf>)->Result<()>{
     //     todo!();
@@ -758,13 +904,7 @@ pub mod solnado {
         msg!("Submitted nullifier hash: {:?}", nullifier_hash);
         msg!("Verifying proof...");
         //Nullifier logic before checking the proof
-        let res = verify_proof(&proof, &public_inputs).map_err(|_e| ErrorCode::InvalidProof)?;
-
-        if !res {
-            msg!("Proof result is false!");
-            return Err(ErrorCode::InvalidArgument.into());
-        }
-        msg!("Proof verified successfuly");
+        verify_withdraw_fixed_proof(&proof, &public_inputs).map_err(|_e| ErrorCode::InvalidProof)?;
 
         let withdraw_pool_amount = pool.min_deposit_amount;
 
