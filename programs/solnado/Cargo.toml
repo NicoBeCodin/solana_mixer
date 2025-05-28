@@ -1,3 +1,5 @@
+
+
 [package]
 name = "solnado"
 version = "0.1.0"
@@ -16,6 +18,9 @@ no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
 
+
+
+
 [dependencies]
 anchor-lang = {version="0.31.1", features=["init-if-needed"]}
 ark-bn254 = "0.3.0"
@@ -29,6 +34,5 @@ hex = "0.4"
 num-bigint= "0.4.6"
 num-traits = "0.2.19"
 base64 = "0.21" 
-
 
 

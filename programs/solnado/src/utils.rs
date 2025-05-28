@@ -1,5 +1,5 @@
 use crate::error::ErrorCode;
-use crate::verifying_key::{self, *};
+use crate::verifying_key::*;
 use crate::{DEFAULT_LEAF, LEAVES_LENGTH};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::sysvar::instructions;
@@ -10,31 +10,71 @@ use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use solana_poseidon::{hashv, Endianness, Parameters};
 use std::ops::Neg;
 pub const SUB_BATCH_SIZE: usize = 8;
+pub const MEMO_PROGRAM_ID: Pubkey = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 type G1 = ark_bn254::G1Affine;
 use base64::{engine::general_purpose, Engine as _};
 pub type LeavesArray = [[u8; 32]; 16];
 
 
-pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
-    let mut level = *leaves;
-    let mut next = [[0u8; 32]; LEAVES_LENGTH / 2];
-    let mut size = LEAVES_LENGTH;
-    while size > 1 {
-        for i in 0..size / 2 {
-            next[i] = hashv(
-                Parameters::Bn254X5,
-                Endianness::BigEndian,
-                &[&level[2 * i], &level[2 * i + 1]],
-            )
-            .unwrap()
-            .to_bytes();
-        }
-        level[..size / 2].copy_from_slice(&next[..size / 2]);
-        size /= 2;
-    }
-    level[0]
-}
 
+
+
+pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
+    let mut nodes = leaves.to_vec();
+    
+       
+     msg!("Calculating root");
+    // Ensure the number of leaves is a power of two
+    if (nodes.len() & (nodes.len() - 1)) != 0 {
+        panic!("Number of leaves must be a power of two");
+    }
+
+    while nodes.len() > 1 {
+        let mut next_level = Vec::with_capacity(nodes.len() / 2);
+        for i in (0..nodes.len()).step_by(2) {
+            let left = nodes[i];
+            let right = nodes[i + 1];
+            let parent_hash: [u8; 32] =
+                hashv(Parameters::Bn254X5, Endianness::BigEndian, &[&left, &right])
+                    .unwrap()
+                    .to_bytes();
+            next_level.push(parent_hash);
+        }
+        nodes = next_level;
+    }
+    nodes[0]
+}
+   
+
+    
+    
+// pub fn get_root(leaves: &[[u8; 32]; LEAVES_LENGTH]) -> [u8; 32] {
+//     // Start with a Vec so we can shrink it each round
+//     let mut nodes: Vec<[u8; 32]> = leaves.to_vec();
+
+//     // While there is more than one node, hash pairs
+//     while nodes.len() > 1 {
+//         // We assume LEAVES_LENGTH is always a power of two
+//         let mut next_level = Vec::with_capacity(nodes.len() / 2);
+//         for pair in nodes.chunks(2) {
+//             // pair.len() should always be 2
+//             let left = &pair[0];
+//             let right = &pair[1];
+//             let h = hashv(
+//                 Parameters::Bn254X5,
+//                 Endianness::BigEndian,
+//                 &[left, right],
+//             )
+//             .unwrap() // you can replace with your own ErrorCode
+//             .to_bytes();
+//             next_level.push(h);
+//         }
+//         nodes = next_level;
+//     }
+
+//     // Now nodes.len() == 1
+//     nodes[0]
+// }
 
 fn change_endianness(bytes: &[u8]) -> Vec<u8> {
     let mut vec = Vec::new();
@@ -132,7 +172,7 @@ pub const DEPTH_TWELVE: [u8; 32] = [
 pub const DEPTH_THIRTEEN: [u8; 32] = [
     20, 197, 65, 72, 160, 148, 11, 184, 32, 149, 127, 90, 223, 63, 161, 19, 78, 245, 196, 170, 161,
     19, 244, 100, 100, 88, 242, 112, 224, 191, 191, 208,
-];  
+];
 pub const DEPTH_FOURTEEN: [u8; 32] = [
     25, 13, 51, 177, 47, 152, 111, 150, 30, 16, 192, 238, 68, 216, 185, 175, 17, 190, 37, 88, 140,
     173, 137, 212, 22, 17, 142, 75, 244, 235, 232, 12,
@@ -222,103 +262,69 @@ pub fn verify_withdraw_fixed_proof(proof: &[u8; 256], public_inputs: &[u8]) -> R
     Ok(())
 }
 
-//For variable deposit amount, 2 leaves to one 
+//For variable deposit amount, 2 leaves to one
 pub fn verify_deposit_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
-) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
-    // must be exactly three 32‐byte words
-    if public_inputs.len() != 96 {
+) -> Result<([u8; 8], [u8; 32], [u8; 32])> {
+    
+    
+    if public_inputs.len() != 72{
         msg!("Invalid public inputs length: {}", public_inputs.len());
         return Err(ErrorCode::InvalidArgument.into());
     }
 
     // unpack the three outputs
-    let sum_be: [u8; 32] = public_inputs[0..32]
+    let sum_be8: [u8; 8] = public_inputs[0..8]
         .try_into()
         .expect("Error converting type");
-    let leaf1: [u8; 32] = public_inputs[32..64]
+    let mut secret_be = [0u8; 32];
+    // copy your 8 bytes into the *right* end of the 32-byte buffer
+    secret_be[32 - 8..].copy_from_slice(&sum_be8);
+    let leaf1: [u8; 32] = public_inputs[8..40]
         .try_into()
         .expect("Error converting type");
-    let leaf2: [u8; 32] = public_inputs[64..96]
+    let leaf2: [u8; 32] = public_inputs[40..72]
         .try_into()
         .expect("Error converting type");
 
-    let inputs_arr: &[[u8; 32]; 3] = &[sum_be, leaf1, leaf2];
+    let inputs_arr: &[[u8; 32]; 3] = &[secret_be, leaf1, leaf2];
 
-    let _ = proof_verification(proof, &VERIFYINGKEY_VAR, inputs_arr);
+    let _ = proof_verification(proof, &VERIFYINGKEY_DEPOSIT2, inputs_arr);
 
-    // let proof_a: G1 =
-    //     <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-    //         .unwrap();
-    // let mut proof_a_neg = [0u8; 65];
-    // <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    // let proof_a = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
-    // let proof_b = proof[64..192].try_into().unwrap();
-    // let proof_c = proof[192..256].try_into().unwrap();
+    msg!("Double leaf deposit proof succesfully verified");
 
-    // // Verify the proof
-    // let mut v = Groth16Verifier::new(
-    //     &proof_a,
-    //     &proof_b,
-    //     &proof_c,
-    //     &inputs_arr,
-    //     &VERIFYINGKEY_VAR as &Groth16Verifyingkey,
-    // )
-    // .map_err(|_| ErrorCode::InvalidProof)?;
-    // // run it
-    // let good = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
-    // require!(good, ErrorCode::InvalidProof);
-    msg!("Proof succesfully verified");
-
-    Ok((sum_be, leaf1, leaf2))
+    Ok((sum_be8, leaf1, leaf2))
 }
 
 pub fn verify_single_deposit_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
-) -> Result<([u8; 32], [u8; 32])> {
+) -> Result<([u8; 8], [u8; 32])> {
     // must be exactly three 32‐byte words
-    if public_inputs.len() != 96 {
+    if public_inputs.len() != 72 {
         msg!("Invalid public inputs length: {}", public_inputs.len());
         return Err(ErrorCode::InvalidArgument.into());
     }
 
     // unpack the three outputs
-    let sum_be: [u8; 32] = public_inputs[0..32]
+    let sum_be8: [u8; 8] = public_inputs[0..8]
         .try_into()
         .expect("Error converting type");
-    let leaf1: [u8; 32] = public_inputs[32..64]
+    let mut secret_be = [0u8; 32];
+    // copy your 8 bytes into the *right* end of the 32-byte buffer
+    secret_be[32 - 8..].copy_from_slice(&sum_be8);
+    let leaf1: [u8; 32] = public_inputs[8..40]
         .try_into()
         .expect("Error converting type");
 
-    let inputs_arr: &[[u8; 32]; 2] = &[sum_be, leaf1];
-    let _ = proof_verification(proof, &VERIFYINGKEY_VAR, inputs_arr);
+    let inputs_arr: &[[u8; 32]; 2] = &[secret_be, leaf1];
+    let _ = proof_verification(proof, &VERIFYINGKEY_DEPOSIT1, inputs_arr);
 
-    // let proof_a: G1 =
-    //     <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-    //         .unwrap();
-    // let mut proof_a_neg = [0u8; 65];
-    // <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    // let proof_a = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
-    // let proof_b = proof[64..192].try_into().unwrap();
-    // let proof_c = proof[192..256].try_into().unwrap();
 
-    // // Verify the proof
-    // let mut v = Groth16Verifier::new(
-    //     &proof_a,
-    //     &proof_b,
-    //     &proof_c,
-    //     &inputs_arr,
-    //     &VERIFYINGKEY_VAR as &Groth16Verifyingkey, //Adjust the verifying key
-    // )
-    // .map_err(|_| ErrorCode::InvalidProof)?;
-    // // run it
-    // let good = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
-    // require!(good, ErrorCode::InvalidProof);
-    msg!("Proof succesfully verified");
+    msg!("Proof single leaf deposit proof succesfully verified");
 
-    Ok((sum_be, leaf1))
+    Ok((sum_be8, leaf1))
 }
 
 // 2 null -> 1 leaf
@@ -328,46 +334,23 @@ pub fn verify_combine_proof(
     // null2: [u8; 32],
     // new_leaf: [u8; 32],
     // root: [u8; 32],
-    public_inputs: &Vec<u8>
-) -> Result<([u8; 32],[u8; 32],[u8; 32],[u8; 32])> {
-    
+    public_inputs: &[u8],
+) -> Result<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
     // Build the fixed‐size array reference for the verifier
-    let n1: [u8;32]= public_inputs[..32].try_into().expect("Failed converting");
-    let n2: [u8;32]= public_inputs[32..64].try_into().expect("Failed converting");
-    let new_leaf: [u8;32]= public_inputs[64..96].try_into().expect("Failed converting");
-    let root: [u8;32]= public_inputs[96..128].try_into().expect("Failed converting");
+    let n1: [u8; 32] = public_inputs[..32].try_into().expect("Failed converting");
+    let n2: [u8; 32] = public_inputs[32..64].try_into().expect("Failed converting");
+    let new_leaf: [u8; 32] = public_inputs[64..96].try_into().expect("Failed converting");
+    let root: [u8; 32] = public_inputs[96..128]
+        .try_into()
+        .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 4] = &[n1, n2, new_leaf, root];
 
     let _ = proof_verification(proof, &COMBINE_VERIFYINGKEY, inputs_arr);
 
-    // // Deserialize πA with endianness fix
-    // let proof_a: G1 =
-    //     <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-    //         .unwrap();
-    // let mut proof_a_neg = [0u8; 65];
-    // <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    // let proof_a = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
-
-    // // πB and πC come directly
-    // let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
-    // let proof_c: [u8; 64] = proof[192..256].try_into().unwrap();
-
-    // // Run the verifier
-    // let mut v = Groth16Verifier::new(
-    //     &proof_a,
-    //     &proof_b,
-    //     &proof_c,
-    //     inputs_arr,
-    //     &COMBINE_VERIFYINGKEY as &Groth16Verifyingkey,
-    // )
-    // .map_err(|_| ErrorCode::InvalidProof)?;
-
-    // let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
-    // require!(ok, ErrorCode::InvalidProof);
     msg!("Combine proof successfully verified");
 
     // Return the four public outputs
-    Ok((n1,n2,new_leaf, root))
+    Ok((n1, n2, new_leaf, root))
     // (*new_leaf, *root)
 }
 
@@ -377,14 +360,15 @@ pub fn verify_one_null_two_leaves(
     // null2: [u8; 32],
     // new_leaf: [u8; 32],
     // root: [u8; 32],
-    public_inputs: &Vec<u8>
-) -> Result<([u8; 32],[u8; 32],[u8; 32],[u8; 32])> {
-    
+    public_inputs: &[u8],
+) -> Result<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
     // Build the fixed‐size array reference for the verifier
-    let n1: [u8;32]= public_inputs[..32].try_into().expect("Failed converting");
-    let leaf1: [u8;32]= public_inputs[32..64].try_into().expect("Failed converting");
-    let leaf2: [u8;32]= public_inputs[64..96].try_into().expect("Failed converting");
-    let root: [u8;32]= public_inputs[96..128].try_into().expect("Failed converting");
+    let n1: [u8; 32] = public_inputs[..32].try_into().expect("Failed converting");
+    let leaf1: [u8; 32] = public_inputs[32..64].try_into().expect("Failed converting");
+    let leaf2: [u8; 32] = public_inputs[64..96].try_into().expect("Failed converting");
+    let root: [u8; 32] = public_inputs[96..128]
+        .try_into()
+        .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 4] = &[n1, leaf1, leaf2, root];
 
     let _ = proof_verification(proof, &COMBINE_VERIFYINGKEY, inputs_arr);
@@ -416,7 +400,7 @@ pub fn verify_one_null_two_leaves(
     msg!("Combine proof successfully verified");
 
     // Return the four public outputs
-    Ok((n1,leaf1,leaf2, root))
+    Ok((n1, leaf1, leaf2, root))
     // (*new_leaf, *root)
 }
 
@@ -426,98 +410,110 @@ pub fn verify_two_null_two_leaves(
     // null2: [u8; 32],
     // new_leaf: [u8; 32],
     // root: [u8; 32],
-    public_inputs: &Vec<u8>
-) -> Result<([u8; 32],[u8; 32],[u8; 32],[u8; 32], [u8;32])> {
-    
+    public_inputs: &[u8],
+) -> Result<([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
     // Build the fixed‐size array reference for the verifier
-    let n1: [u8;32]= public_inputs[..32].try_into().expect("Failed converting");
-    let n2: [u8;32]= public_inputs[32..64].try_into().expect("Failed converting");
-    let leaf1: [u8;32]= public_inputs[64..96].try_into().expect("Failed converting");
-    let leaf2: [u8;32]= public_inputs[96..128].try_into().expect("Failed converting");
-    let root: [u8;32]= public_inputs[128..160].try_into().expect("Failed converting");
+    let n1: [u8; 32] = public_inputs[..32].try_into().expect("Failed converting");
+    let n2: [u8; 32] = public_inputs[32..64].try_into().expect("Failed converting");
+    let leaf1: [u8; 32] = public_inputs[64..96].try_into().expect("Failed converting");
+    let leaf2: [u8; 32] = public_inputs[96..128]
+        .try_into()
+        .expect("Failed converting");
+    let root: [u8; 32] = public_inputs[128..160]
+        .try_into()
+        .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 5] = &[n1, n2, leaf1, leaf2, root];
 
     let _ = proof_verification(proof, &COMBINE_VERIFYINGKEY, inputs_arr);
 
-    // // Deserialize πA with endianness fix
-    // let proof_a: G1 =
-    //     <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-    //         .unwrap();
-    // let mut proof_a_neg = [0u8; 65];
-    // <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    // let proof_a = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
-
-    // // πB and πC come directly
-    // let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
-    // let proof_c: [u8; 64] = proof[192..256].try_into().unwrap();
-
-    // // Run the verifier
-    // let mut v = Groth16Verifier::new(
-    //     &proof_a,
-    //     &proof_b,
-    //     &proof_c,
-    //     inputs_arr,
-    //     &COMBINE_VERIFYINGKEY as &Groth16Verifyingkey,
-    // )
-    // .map_err(|_| ErrorCode::InvalidProof)?;
-
-    // let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
-    // require!(ok, ErrorCode::InvalidProof);
     msg!("Combine proof successfully verified");
 
     // Return the four public outputs
-    Ok((n1,n2,leaf1,leaf2, root))
-    // (*new_leaf, *root)
+    Ok((n1, n2, leaf1, leaf2, root))
 }
-
 
 /// Unpacks & verifies a single‐leaf Merkle‐inclusion proof for withdrawal.
 /// Expects `public_inputs = secret_be || nullifier_hash_be || root_be`, each 32 bytes.
 pub fn verify_withdraw_proof(
     proof: &[u8; 256],
-    secret: u64,
-    nullifier: [u8; 32],
-    root: [u8; 32],
-) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
-    let secret_be: [u8; 32] = Fr::from(8u64)
-        .0
-        .to_bytes_be()
-        .try_into()
-        .expect("Failed conversion");
+    public_inputs: &[u8],
+) -> Result<([u8; 8], [u8; 32], [u8; 32])> {
+    // let secret_be: [u8; 32] = Fr::from(8u64)
+    //     .0
+    //     .to_bytes_be()
+    //     .try_into()
+    //     .expect("Failed conversion");
 
-    let inputs_arr: &[[u8; 32]; 3] = &[secret_be, nullifier, root];
+    let secret_be8: [u8; 8] = public_inputs[..8].try_into().expect("Failed");
+    // allocate a 32-byte buffer, zero-initialized
+    let mut secret_be = [0u8; 32];
+    // copy your 8 bytes into the *right* end of the 32-byte buffer
+    secret_be[32 - 8..].copy_from_slice(&secret_be8);
+    let null: [u8; 32] = public_inputs[8..40].try_into().expect("Failed");
+    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+
+    let inputs_arr: &[[u8; 32]; 3] = &[secret_be, null, root];
 
     let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
-    // Deserialize πA with endianness fix
-    // let proof_a: G1 =
-    //     <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-    //         .unwrap();
-    // let mut proof_a_neg = [0u8; 65];
-    // <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    // let proof_a: [u8; 64] = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
 
-    // // πB and πC come directly
-    // let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
-    // let proof_c: [u8; 64] = proof[192..256].try_into().unwrap();
-
-    // let mut v = Groth16Verifier::new(
-    //     &proof_a,
-    //     &proof_b,
-    //     &proof_c,
-    //     inputs_arr,
-    //     &WITHDRAW_VAR_VK as &Groth16Verifyingkey,
-    // )
-    // .map_err(|_| ErrorCode::InvalidProof)?;
-
-    // let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
-    // require!(ok, ErrorCode::InvalidProof);
-    // msg!("Combine proof successfully verified");
-
-    Ok((secret_be, nullifier, root))
+    Ok((secret_be8, null, root))
 }
 
-fn proof_verification<const N: usize>(proof: &[u8;256], verifying_key: &Groth16Verifyingkey, public_inputs: &[[u8;32]; N])->Result<()>{
-    
+pub fn verify_withdraw_and_deposit_proof(
+    proof: &[u8; 256],
+    public_inputs: &[u8],
+) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
+    // let secret_be: [u8; 32] = Fr::from(8u64)
+    //     .0
+    //     .to_bytes_be()
+    //     .try_into()
+    //     .expect("Failed conversion");
+
+    let secret_be8: [u8; 8] = public_inputs[..8].try_into().expect("Failed");
+    // allocate a 32-byte buffer, zero-initialized
+    let mut secret_be = [0u8; 32];
+    // copy your 8 bytes into the *right* end of the 32-byte buffer
+    secret_be[32 - 8..].copy_from_slice(&secret_be8);
+    let null: [u8; 32] = public_inputs[8..40].try_into().expect("Failed");
+    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+    let new_leaf = public_inputs[72..104].try_into().expect("Failed");
+    let inputs_arr: &[[u8; 32]; 4] = &[secret_be, null, new_leaf, root];
+
+    let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
+    Ok((secret_be8, null, new_leaf, root))
+}
+
+pub fn verify_withdraw_on_behalf(
+    proof: &[u8; 256],
+    public_inputs: &[u8],
+) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
+    // let secret_be: [u8; 32] = Fr::from(8u64)
+    //     .0
+    //     .to_bytes_be()
+    //     .try_into()
+    //     .expect("Failed conversion");
+
+    let secret_be8: [u8; 8] = public_inputs[..8].try_into().expect("Failed");
+    // allocate a 32-byte buffer, zero-initialized
+    let mut secret_be = [0u8; 32];
+    // copy your 8 bytes into the *right* end of the 32-byte buffer
+    secret_be[32 - 8..].copy_from_slice(&secret_be8);
+    let null: [u8; 32] = public_inputs[8..40].try_into().expect("Failed");
+    let withdrawer_bytes: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+
+    let inputs_arr: &[[u8; 32]; 4] = &[secret_be, null, withdrawer_bytes, root];
+
+    let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
+
+    Ok((secret_be8, null, withdrawer_bytes, root))
+}
+
+fn proof_verification<const N: usize>(
+    proof: &[u8; 256],
+    verifying_key: &Groth16Verifyingkey,
+    public_inputs: &[[u8; 32]; N],
+) -> Result<()> {
     // let public_inputs_arr: [[u8;32];_] = public_inputs.try_into().expect("Failed");
     // Deserialize πA with endianness fix
     let proof_a: G1 =
@@ -531,107 +527,79 @@ fn proof_verification<const N: usize>(proof: &[u8;256], verifying_key: &Groth16V
     let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
     let proof_c: [u8; 64] = proof[192..256].try_into().unwrap();
 
-    let mut v = Groth16Verifier::new(
-        &proof_a,
-        &proof_b,
-        &proof_c,
-        public_inputs ,
-        verifying_key,
-    )
-    .map_err(|_| ErrorCode::InvalidProof)?;
+    let mut v = Groth16Verifier::new(&proof_a, &proof_b, &proof_c, public_inputs, verifying_key)
+        .map_err(|_| ErrorCode::InvalidProof)?;
 
     let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
     require!(ok, ErrorCode::InvalidProof);
     Ok(())
-
 }
 
 /// Checks that the subbatch memo is correct, essential for easy parsing
-pub fn enforce_sub_batch_memo(
-    sysvar_account: &AccountInfo,
-    batch_number: u64,
-    expected_leaves: &[[u8; 32]],
-) -> Result<()> {
-    // Load the first instruction (must be Memo)
-    let memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
-    let memo_program_id =
-        anchor_lang::solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+ pub fn enforce_sub_batch_memo(
+ sysvar_account: &AccountInfo,
+ batch_number: u64,
+ expected_leaves: &[[u8; 32]]
+ )-> Result<()> {
+ // Load the first instruction (must be Memo)
+ let memo_ix = instructions::load_instruction_at_checked(1, sysvar_account)?;
+ 
+ msg!("memo_ix: {:?}", memo_ix.program_id);
+ 
+ require!(
+     memo_ix.program_id == MEMO_PROGRAM_ID,
+     ErrorCode::MissingMemoInstruction
+ );
 
-    require!(
-        memo_ix.program_id == memo_program_id,
-        ErrorCode::MissingMemoInstruction
-    );
+ // Decode base64 payload
+ let memo_str = std::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+ msg!("Translating from utf8 {}", memo_str);
+ let memo_bytes = general_purpose::STANDARD
+     .decode(memo_str)
+     .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+ msg!("Getting memo bytes {:?}", memo_bytes);
 
-    // Decode base64 payload
-    let memo_str = std::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
-    msg!("Translating from utf8 {}", memo_str);
-    let memo_bytes = general_purpose::STANDARD
-        .decode(memo_str)
-        .map_err(|_| ErrorCode::InvalidMemoBase64)?;
-    msg!("Getting memo bytes {:?}", memo_bytes);
+ // Must be exactly 8-byte batch number + N*32 bytes
+ let expected_len = 8 + expected_leaves.len() * 32;
+ require!(
+     memo_bytes.len() == expected_len,
+     ErrorCode::InvalidMemoLength
+ );
 
-    // Must be exactly 8-byte batch number + N*32 bytes
-    let expected_len = 8 + expected_leaves.len() * 32;
-    require!(
-        memo_bytes.len() == expected_len,
-        ErrorCode::InvalidMemoLength
-    );
+ // Check batch number (big-endian u64)
+ let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
+ require!(
+     user_batch == batch_number,
+     ErrorCode::InvalidUserBatchNumber
+ );
 
-    // Check batch number (big-endian u64)
-    let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
-    require!(
-        user_batch == batch_number,
-        ErrorCode::InvalidUserBatchNumber
-    );
-
-    // Verify each leaf
-    for (i, leaf) in expected_leaves.iter().enumerate() {
-        let start = 8 + i * 32;
-        let slice: [u8; 32] = memo_bytes[start..start + 32].try_into().unwrap();
-        require!(&slice == leaf, ErrorCode::InvalidUserLeaves);
-    }
-    Ok(())
-}
-
-//This forces a memo to be posted of the root of a 16 deep tree () batch==2**12 ->Post the root for easy parsing
-pub fn enforce_memo_small_tree(
-        sysvar_account: &AccountInfo,
-        batch_number: u64,
-        expected_root: [u8;32]
-)->Result<()>{
-    let memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
-    let memo_program_id =
-        anchor_lang::solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
-
-    require!(
-        memo_ix.program_id == memo_program_id,
-        ErrorCode::MissingMemoInstruction
-    );
-    let memo_str = std::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
-    msg!("Translating from utf8 {}", memo_str);
-    let memo_bytes = general_purpose::STANDARD
-        .decode(memo_str)
-        .map_err(|_| ErrorCode::InvalidMemoBase64)?;
-    msg!("Getting memo bytes {:?}", memo_bytes);
-    todo!()
-
+ // Verify each leaf
+ for (i, leaf) in expected_leaves.iter().enumerate() {
+     let start = 8 + i * 32;
+     let slice: [u8; 32] = memo_bytes[start..start + 32].try_into().unwrap();
+     require!(&slice == leaf, ErrorCode::InvalidUserLeaves);
+ }
+ Ok(())
 }
 
 ///  Memo format:   batch_number_be(8) || small_tree_root(32)
 pub fn enforce_small_tree_memo(
-    ix_sysvar:     &AccountInfo,
-    closed_batch:  u64,
-    expected_root: [u8;32],
+    ix_sysvar: &AccountInfo,
+    closed_batch: u64,
+    expected_root: [u8; 32],
 ) -> Result<()> {
-
     let memo_ix = instructions::load_instruction_at_checked(0, ix_sysvar)?;
-    let memo_program_id = anchor_lang::solana_program::pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
-    require!(memo_ix.program_id == memo_program_id, ErrorCode::MissingMemoInstruction);
+
+    require!(
+        memo_ix.program_id == MEMO_PROGRAM_ID,
+        ErrorCode::MissingMemoInstruction
+    );
 
     let memo_bytes = {
-        let memo_str = core::str::from_utf8(&memo_ix.data)
-            .map_err(|_| ErrorCode::InvalidMemoUtf8)?;
-        general_purpose::STANDARD.decode(memo_str)
+        let memo_str =
+            core::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+        general_purpose::STANDARD
+            .decode(memo_str)
             .map_err(|_| ErrorCode::InvalidMemoBase64)?
     };
 
@@ -640,9 +608,28 @@ pub fn enforce_small_tree_memo(
     let bn = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
     require!(bn == closed_batch, ErrorCode::InvalidUserBatchNumber);
 
-    let root_slice: [u8;32] = memo_bytes[8..40].try_into().unwrap();
+    let root_slice: [u8; 32] = memo_bytes[8..40].try_into().unwrap();
     require!(root_slice == expected_root, ErrorCode::InvalidSmallTreeRoot);
 
     Ok(())
 }
 
+// //This forces a memo to be posted of the root of a 16 deep tree () batch==2**12 ->Post the root for easy parsing
+// pub fn enforce_memo_small_tree(
+//     sysvar_account: &AccountInfo,
+//     batch_number: u64,
+//     expected_root: [u8; 32],
+// ) -> Result<()> {
+//     let memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
+//     require!(
+//         memo_ix.program_id == MEMO_PROGRAM_ID,
+//         ErrorCode::MissingMemoInstruction
+//     );
+//     let memo_str = std::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+//     msg!("Translating from utf8 {}", memo_str);
+//     let memo_bytes = general_purpose::STANDARD
+//         .decode(memo_str)
+//         .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+//     msg!("Getting memo bytes {:?}", memo_bytes);
+//     todo!()
+// }

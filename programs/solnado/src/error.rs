@@ -89,5 +89,8 @@ pub enum ErrorCode {
     #[msg("Invalid indexer account")]
     InvalidIndexerAccount,
 
+    #[msg("Invalid withdrawer key")]
+    InvalidWithdrawerKey,
+
 
 }

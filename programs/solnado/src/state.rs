@@ -1,7 +1,9 @@
-use anchor_lang::prelude::*;
-use crate::{ utils::next_power_of_two_batch, DEFAULT_LEAF, LEAVES_LENGTH, MIN_PDA_SIZE, SMALL_TREE_BATCH_DEPTH, TARGET_DEPTH, TARGET_DEPTH_LARGE };
+use anchor_lang::{prelude::*, solana_program::log::sol_log_compute_units};
+use crate::{ utils::next_power_of_two_batch, DEFAULT_LEAF, MIN_PDA_SIZE, SMALL_TREE_BATCH_DEPTH, TARGET_DEPTH, TARGET_DEPTH_LARGE };
 use solana_poseidon::{ Parameters, hashv, Endianness };
 use crate::utils::get_default_root_depth;
+
+
 
 #[derive(Accounts)]
 #[instruction(identifier: [u8;16])]
@@ -35,6 +37,7 @@ pub struct InitializeVariablePool<'info> {
     pub pool: Account<'info, MerkleMountainRange>,
 
     ///CHECK: leaves_indexer (called only when subbatch is full)
+    // #[account(mut)]
     #[account(mut)]
     pub leaves_indexer: AccountInfo<'info>,
 
@@ -101,9 +104,9 @@ pub struct DepositVariable<'info> {
     // ///CHECK : subtree_indexer called when a 2^16 tree is
     // #[account(mut)]
     // pub subtree_indexer: AccountInfo<'info>,
-
-
 }
+
+
 
 #[derive(Accounts)]
 #[instruction(nullifier1: [u8;32], nullifier2: [u8;32])]
@@ -180,6 +183,32 @@ pub struct WithdrawVariable<'info> {
 }
 
 #[derive(Accounts)]
+pub struct WithdrawOnBehalf<'info> {
+    /// The variable‐pool PDA
+    #[account(
+        mut,
+        seeds = [b"variable_pool", pool.identifier.as_ref()],
+        bump,
+    )]
+    pub pool: Account<'info, MerkleMountainRange>,
+
+    ///A PDA whose seed is exactly the 32-byte nullifier hash.
+    ///CHECK: we mark it “used” here.
+    #[account(mut)]
+    pub nullifier_account: AccountInfo<'info>,
+
+    ///CHECK: The beneficiary of the withdrawal
+    #[account(mut)]
+    pub withdrawer: AccountInfo<'info>,
+
+    /// The transaction fee‐payer (must sign)
+    pub payer: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+
+#[derive(Accounts)]
 pub struct Deposit<'info> {
     #[account(
         mut,
@@ -242,6 +271,52 @@ pub struct AdminTransfer<'info> {
     pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
+
+
+
+// use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
+
+//SPL token causes a shit ton of dependencies issues
+// #[derive(Accounts)]
+// pub struct DepositVariableToken<'info> {
+//     // your existing pool PDA:
+//     #[account(mut, seeds = [b"variable_pool", &pool.identifier], bump)]
+//     pub pool: Account<'info, MerkleMountainRange>,
+
+//     // payer of the deposit:
+//     #[account(mut)]
+//     pub depositor: Signer<'info>,
+
+//     /// SYSVAR_INSTRUCTIONS for reading the memo
+//     ///CHECK:
+//     pub instruction_account: AccountInfo<'info>,
+
+//     // the depositor’s associated token account:
+//     #[account(mut,
+//         associated_token::mint = asset_mint,
+//         associated_token::authority = depositor
+//     )]
+//     pub depositor_ata: Account<'info, TokenAccount>,
+
+//     // the pool’s associated token account, must be created ahead of time:
+//     #[account(mut,
+//         associated_token::mint = asset_mint,
+//         associated_token::authority = pool
+//     )]
+//     pub pool_ata: Account<'info, TokenAccount>,
+
+//     // which mint we’re depositing:
+//     pub asset_mint: Account<'info, Mint>,
+
+//     // the CPI programs:
+//     pub token_program: Program<'info, Token>,
+//     pub associated_token_program: Program<'info, AssociatedToken>,
+
+//     pub system_program: Program<'info, System>,
+//     pub rent: Sysvar<'info, Rent>,
+// }
+
+
 
 //True size mountain range
 
@@ -428,7 +503,11 @@ impl MerkleMountainRange {
 
     pub fn compare_to_deep(&self, user_root: [u8;32])->bool{
         let current_depth = next_power_of_two_batch(self.batch_number as usize);
-        let deep_root= self.deepen(current_depth, TARGET_DEPTH);
+        msg!("Before root deepening");
+        sol_log_compute_units();
+        let deep_root= self.deepen(current_depth, TARGET_DEPTH_LARGE);
+        sol_log_compute_units();
+    
         if !(user_root==deep_root){
             msg!("user root: {:?} \n deep_root: {:?}", user_root, deep_root);
             return false
@@ -437,5 +516,4 @@ impl MerkleMountainRange {
     }
 }
  
-
 

@@ -51,6 +51,8 @@ However, commercial use of this software is strictly prohibited without explicit
 - Implement the chacha signatures schemes
 
 
+- Integrate SPL tokens -> tried but causes too many dependency issues
+
 
 - Refactor the project, more streamlining
 - optimize CU usage
