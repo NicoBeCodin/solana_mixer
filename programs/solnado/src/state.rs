@@ -109,7 +109,6 @@ pub struct DepositVariable<'info> {
 
 
 #[derive(Accounts)]
-#[instruction(nullifier1: [u8;32], nullifier2: [u8;32])]
 pub struct CombineDeposit<'info> {
     #[account(
         mut,
@@ -118,25 +117,6 @@ pub struct CombineDeposit<'info> {
     )]
     pub pool: Account<'info, MerkleMountainRange>,
 
-    ///CHECK: Nullifier #1 PDA
-    // #[account(
-    //     init_if_needed, 
-    //     payer = user,
-    //     seeds = [nullifier1.as_ref()], 
-    //     bump, 
-    //     space = MIN_PDA_SIZE
-    //   )]
-    pub nullifier1_account: AccountInfo<'info>,
-
-    ///CHECK: Nullifier #2 PDA
-    // #[account(
-    //     init_if_needed, 
-    //     payer = user,
-    //     seeds = [nullifier2.as_ref()], 
-    //     bump, 
-    //     space = MIN_PDA_SIZE
-    //   )]
-    pub nullifier2_account: AccountInfo<'info>,
 
     #[account(mut)]
     pub user: Signer<'info>,
@@ -146,6 +126,15 @@ pub struct CombineDeposit<'info> {
     pub instruction_account: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
+    
+    /// CHECK: first nullifier PDA (always required)
+    #[account(mut)]
+    pub nullifier1: AccountInfo<'info>,
+    
+    /// CHECK: second nullifier PDA (only for modes 0 & 2) or coule be leaves_indexer in some case;
+    #[account(mut)]
+    pub nullifier2_or_else: AccountInfo<'info>,
+    
 }
 
 #[derive(Accounts)]
