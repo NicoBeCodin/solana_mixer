@@ -3,8 +3,6 @@ use crate::verifying_key::*;
 use crate::{DEFAULT_LEAF, LEAVES_LENGTH};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::sysvar::instructions;
-use ark_bn254::Fr;
-use ark_ff::BigInteger;
 use ark_ff::{FromBytes, ToBytes};
 use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use solana_poseidon::{hashv, Endianness, Parameters};
@@ -45,37 +43,6 @@ pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
     nodes[0]
 }
    
-
-    
-    
-// pub fn get_root(leaves: &[[u8; 32]; LEAVES_LENGTH]) -> [u8; 32] {
-//     // Start with a Vec so we can shrink it each round
-//     let mut nodes: Vec<[u8; 32]> = leaves.to_vec();
-
-//     // While there is more than one node, hash pairs
-//     while nodes.len() > 1 {
-//         // We assume LEAVES_LENGTH is always a power of two
-//         let mut next_level = Vec::with_capacity(nodes.len() / 2);
-//         for pair in nodes.chunks(2) {
-//             // pair.len() should always be 2
-//             let left = &pair[0];
-//             let right = &pair[1];
-//             let h = hashv(
-//                 Parameters::Bn254X5,
-//                 Endianness::BigEndian,
-//                 &[left, right],
-//             )
-//             .unwrap() // you can replace with your own ErrorCode
-//             .to_bytes();
-//             next_level.push(h);
-//         }
-//         nodes = next_level;
-//     }
-
-//     // Now nodes.len() == 1
-//     nodes[0]
-// }
-
 fn change_endianness(bytes: &[u8]) -> Vec<u8> {
     let mut vec = Vec::new();
     for b in bytes.chunks(32) {
@@ -345,7 +312,7 @@ pub fn verify_combine_proof(
         .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 4] = &[n1, n2, new_leaf, root];
 
-    let _ = proof_verification(proof, &COMBINE_VERIFYINGKEY, inputs_arr);
+    let _ = proof_verification(proof, &COMBINE2TO1_VERIFYINGKEY, inputs_arr);
 
     msg!("Combine proof successfully verified");
 
@@ -371,32 +338,9 @@ pub fn verify_one_null_two_leaves(
         .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 4] = &[n1, leaf1, leaf2, root];
 
-    let _ = proof_verification(proof, &COMBINE_VERIFYINGKEY, inputs_arr);
+    let _ = proof_verification(proof, &COMBINE1TO2_VERIFYINGKEY, inputs_arr);
 
-    // // Deserialize πA with endianness fix
-    // let proof_a: G1 =
-    //     <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-    //         .unwrap();
-    // let mut proof_a_neg = [0u8; 65];
-    // <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    // let proof_a = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
 
-    // // πB and πC come directly
-    // let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
-    // let proof_c: [u8; 64] = proof[192..256].try_into().unwrap();
-
-    // // Run the verifier
-    // let mut v = Groth16Verifier::new(
-    //     &proof_a,
-    //     &proof_b,
-    //     &proof_c,
-    //     inputs_arr,
-    //     &COMBINE_VERIFYINGKEY as &Groth16Verifyingkey,
-    // )
-    // .map_err(|_| ErrorCode::InvalidProof)?;
-
-    // let ok = v.verify().map_err(|_| ErrorCode::InvalidProof)?;
-    // require!(ok, ErrorCode::InvalidProof);
     msg!("Combine proof successfully verified");
 
     // Return the four public outputs
@@ -424,7 +368,7 @@ pub fn verify_two_null_two_leaves(
         .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 5] = &[n1, n2, leaf1, leaf2, root];
 
-    let _ = proof_verification(proof, &COMBINE_VERIFYINGKEY, inputs_arr);
+    let _ = proof_verification(proof, &COMBINE2TO2_VERIFYINGKEY, inputs_arr);
 
     msg!("Combine proof successfully verified");
 
@@ -444,19 +388,29 @@ pub fn verify_withdraw_proof(
     //     .try_into()
     //     .expect("Failed conversion");
 
-    let secret_be8: [u8; 8] = public_inputs[..8].try_into().expect("Failed");
+    
     // allocate a 32-byte buffer, zero-initialized
-    let mut secret_be = [0u8; 32];
+    let mut val_be = [0u8; 32];
     // copy your 8 bytes into the *right* end of the 32-byte buffer
-    secret_be[32 - 8..].copy_from_slice(&secret_be8);
-    let null: [u8; 32] = public_inputs[8..40].try_into().expect("Failed");
-    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+    let null: [u8; 32] = public_inputs[0..32].try_into().expect("Failed");
+    let asset_id :[u8; 32]= public_inputs[32..64].try_into().expect("Failed");
+    let val_be8: [u8; 8] = public_inputs[64..72].try_into().expect("Failed");
+    val_be[32 - 8..].copy_from_slice(&val_be8);
+    let root: [u8; 32] = public_inputs[72..104].try_into().expect("Failed");
+    
+    //For SOL this must be 0.
+    for i in asset_id {
+        if i !=0 {
+            return Err(ErrorCode::InvalidAssetId.into());
+        }
+    }
 
-    let inputs_arr: &[[u8; 32]; 3] = &[secret_be, null, root];
+    let inputs_arr: &[[u8; 32]; 4] = &[val_be, asset_id, null, root];
+
 
     let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
 
-    Ok((secret_be8, null, root))
+    Ok((val_be8, null, root))
 }
 
 pub fn verify_withdraw_and_deposit_proof(
@@ -469,18 +423,24 @@ pub fn verify_withdraw_and_deposit_proof(
     //     .try_into()
     //     .expect("Failed conversion");
 
-    let secret_be8: [u8; 8] = public_inputs[..8].try_into().expect("Failed");
     // allocate a 32-byte buffer, zero-initialized
-    let mut secret_be = [0u8; 32];
+    let mut val_be = [0u8; 32];
+    let val_be8: [u8; 8] = public_inputs[64..72].try_into().expect("Failed");
     // copy your 8 bytes into the *right* end of the 32-byte buffer
-    secret_be[32 - 8..].copy_from_slice(&secret_be8);
-    let null: [u8; 32] = public_inputs[8..40].try_into().expect("Failed");
-    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+    val_be[32 - 8..].copy_from_slice(&val_be8);
+    let null: [u8; 32] = public_inputs[0..32].try_into().expect("Failed");
+    let asset_id: [u8; 32] = public_inputs[32..64].try_into().expect("Failed");
     let new_leaf = public_inputs[72..104].try_into().expect("Failed");
-    let inputs_arr: &[[u8; 32]; 4] = &[secret_be, null, new_leaf, root];
-
-    let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
-    Ok((secret_be8, null, new_leaf, root))
+    let root: [u8; 32] = public_inputs[104..136].try_into().expect("Failed");
+    let inputs_arr: &[[u8; 32]; 5] = &[val_be,asset_id, null, new_leaf, root];
+    //For SOL this must be 0.
+    for i in asset_id {
+        if i !=0 {
+            return Err(ErrorCode::InvalidAssetId.into());
+        }
+    }
+    let _ = proof_verification(proof, &WITHDRAW_AND_ADD_VERIFYINGKEY, inputs_arr);
+    Ok((val_be8, null, new_leaf, root))
 }
 
 pub fn verify_withdraw_on_behalf(
@@ -559,13 +519,6 @@ fn proof_verification<const N: usize>(
      .map_err(|_| ErrorCode::InvalidMemoBase64)?;
  msg!("Getting memo bytes {:?}", memo_bytes);
 
- // Must be exactly 8-byte batch number + N*32 bytes
- let expected_len = 8 + expected_leaves.len() * 32;
- require!(
-     memo_bytes.len() == expected_len,
-     ErrorCode::InvalidMemoLength
- );
-
  // Check batch number (big-endian u64)
  let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
  require!(
@@ -603,7 +556,7 @@ pub fn enforce_small_tree_memo(
             .map_err(|_| ErrorCode::InvalidMemoBase64)?
     };
 
-    require!(memo_bytes.len() == 40, ErrorCode::InvalidMemoLength); // 8 + 32
+    // require!(memo_bytes.len() == 40, ErrorCode::InvalidMemoLength); // 8 + 32
 
     let bn = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
     require!(bn == closed_batch, ErrorCode::InvalidUserBatchNumber);
@@ -614,22 +567,31 @@ pub fn enforce_small_tree_memo(
     Ok(())
 }
 
-// //This forces a memo to be posted of the root of a 16 deep tree () batch==2**12 ->Post the root for easy parsing
-// pub fn enforce_memo_small_tree(
-//     sysvar_account: &AccountInfo,
-//     batch_number: u64,
-//     expected_root: [u8; 32],
-// ) -> Result<()> {
-//     let memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
-//     require!(
-//         memo_ix.program_id == MEMO_PROGRAM_ID,
-//         ErrorCode::MissingMemoInstruction
-//     );
-//     let memo_str = std::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
-//     msg!("Translating from utf8 {}", memo_str);
-//     let memo_bytes = general_purpose::STANDARD
-//         .decode(memo_str)
-//         .map_err(|_| ErrorCode::InvalidMemoBase64)?;
-//     msg!("Getting memo bytes {:?}", memo_bytes);
-//     todo!()
-// }
+pub fn enforce_nullifier_shard_memo(
+    sysvar_ai: &AccountInfo,
+    expected_initials: &[[u8; 32]; 4],
+) -> Result<()> {
+    // 1) Load the first instruction via the instructions sysvar
+    let memo_ix = instructions::load_instruction_at_checked(0, sysvar_ai)
+        .map_err(|_| error!(ErrorCode::MissingMemoInstruction))?;
+    // 2) Must be the Memo program
+    let memo_program_id = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+    require!(
+        memo_ix.program_id == memo_program_id,
+        ErrorCode::MissingMemoInstruction
+    );
+    // 3) Memo data is base64‐encoded; decode it
+    let s = std::str::from_utf8(&memo_ix.data)
+        .map_err(|_| error!(ErrorCode::InvalidMemoUtf8))?;
+    let memo_bytes = general_purpose::STANDARD
+        .decode(s)
+        .map_err(|_| error!(ErrorCode::InvalidMemoBase64))?;
+    // 4) For each expected 32-byte initial, ensure it appears somewhere
+    for init in expected_initials.iter() {
+        let found = memo_bytes
+            .windows(32)
+            .any(|window| window == init);
+        require!(found, ErrorCode::InvalidNullifierShardMemo);
+    }
+    Ok(())
+}

@@ -1,9 +1,9 @@
 use anchor_lang::{prelude::*, solana_program::log::sol_log_compute_units};
-use crate::{ utils::next_power_of_two_batch, DEFAULT_LEAF, MIN_PDA_SIZE, SMALL_TREE_BATCH_DEPTH, TARGET_DEPTH, TARGET_DEPTH_LARGE };
+use crate::{ utils::next_power_of_two_batch, DEFAULT_LEAF, SMALL_TREE_BATCH_DEPTH, TARGET_DEPTH_LARGE, TARGET_DEPTH_LARGE_ARRAY, MIN_PDA_SIZE };
 use solana_poseidon::{ Parameters, hashv, Endianness };
 use crate::utils::get_default_root_depth;
-
-
+use crate::error::ErrorCode;
+pub const SHARD_SIZE: usize = 8;
 
 #[derive(Accounts)]
 #[instruction(identifier: [u8;16])]
@@ -35,6 +35,8 @@ pub struct InitializeVariablePool<'info> {
         bump
     )]
     pub pool: Account<'info, MerkleMountainRange>,
+
+    
 
     ///CHECK: leaves_indexer (called only when subbatch is full)
     // #[account(mut)]
@@ -149,13 +151,13 @@ pub struct WithdrawVariable<'info> {
     pub pool: Account<'info, MerkleMountainRange>,
 
     ///CHECK :The user who is withdrawing
-    #[account(
-        init_if_needed, 
-        payer = user,
-        seeds = [nullifier_hash.as_ref()], 
-        bump, 
-        space = 0
-      )]
+    // // #[account(
+    // //     init_if_needed, 
+    // //     payer = user,
+    // //     seeds = [nullifier_hash.as_ref()], 
+    // //     bump, 
+    // //     space = 0
+    //   )]
     pub nullifier_account: AccountInfo<'info>,
 
     #[account(mut)]
@@ -164,9 +166,7 @@ pub struct WithdrawVariable<'info> {
     // /// A PDA whose seed is exactly the 32‐byte nullifier hash.
     // /// We create it here (with size=0) to mark “this nullifier was spent.”
     // /// CHECK: we're only using this for lamport‐zero and PDA‐existence checks.
-    // #[account(mut)]
-    // pub nullifier_account: AccountInfo<'info>,
-
+    
     /// System program (for create_account + transfer)
     pub system_program: Program<'info, System>,
 }
@@ -261,53 +261,8 @@ pub struct AdminTransfer<'info> {
     pub system_program: Program<'info, System>,
 }
 
-
-
-// use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
-
-//SPL token causes a shit ton of dependencies issues
-// #[derive(Accounts)]
-// pub struct DepositVariableToken<'info> {
-//     // your existing pool PDA:
-//     #[account(mut, seeds = [b"variable_pool", &pool.identifier], bump)]
-//     pub pool: Account<'info, MerkleMountainRange>,
-
-//     // payer of the deposit:
-//     #[account(mut)]
-//     pub depositor: Signer<'info>,
-
-//     /// SYSVAR_INSTRUCTIONS for reading the memo
-//     ///CHECK:
-//     pub instruction_account: AccountInfo<'info>,
-
-//     // the depositor’s associated token account:
-//     #[account(mut,
-//         associated_token::mint = asset_mint,
-//         associated_token::authority = depositor
-//     )]
-//     pub depositor_ata: Account<'info, TokenAccount>,
-
-//     // the pool’s associated token account, must be created ahead of time:
-//     #[account(mut,
-//         associated_token::mint = asset_mint,
-//         associated_token::authority = pool
-//     )]
-//     pub pool_ata: Account<'info, TokenAccount>,
-
-//     // which mint we’re depositing:
-//     pub asset_mint: Account<'info, Mint>,
-
-//     // the CPI programs:
-//     pub token_program: Program<'info, Token>,
-//     pub associated_token_program: Program<'info, AssociatedToken>,
-
-//     pub system_program: Program<'info, System>,
-//     pub rent: Sysvar<'info, Rent>,
-// }
-
-
-
 //True size mountain range
+
 
 #[account]
 pub struct MerkleMountainRange{
@@ -324,18 +279,20 @@ pub struct MerkleMountainRange{
     //another variable that will serve to index the small trees
     pub last_small_tree_root: [u8;32],
     pub batch_number: u64,
-    pub peaks: [[u8; 32]; TARGET_DEPTH_LARGE], //Peaks to build merkle tree without storing everything
-    pub depth: [u8; TARGET_DEPTH_LARGE], //With each peak we associate a depth
+    pub peaks: [[u8; 32]; TARGET_DEPTH_LARGE_ARRAY], //Peaks to build merkle tree without storing everything
+    pub depth: [u8; TARGET_DEPTH_LARGE_ARRAY], //With each peak we associate a depth
     pub number_of_peaks: u8, //Max number of peaks is 
     pub max_leaves: u64, //MAX number of leaves in a pool
     //Creator is optional
     pub creator: Pubkey,
     //Creator fee is optional
     pub creator_fee: u64,
+    //I'll add fields for the nullifier manager
+    pub last_nullifiers: [[u8;32]; 4]
 }
 
 impl MerkleMountainRange {
-    pub const MAX_SIZE: usize =  32 + 512 + 16 + 8 + 32 + 32 + 8 + 32 + 8 + 1024 + 32 + 1 + 8 + 64 + 8;
+    pub const MAX_SIZE: usize =  32 + 512 + 16 + 8 + 32 + 32 + 26*32 + 26 + 1 + 8 + 32 + 8 + 100;
 
     pub fn find_first_match(&self) -> usize {
         for (index, element) in self.batch_leaves.into_iter().enumerate() {
@@ -366,7 +323,7 @@ impl MerkleMountainRange {
         let new_peak_depth: u8 = 4;
 
         // Append the new batch.
-        if count < TARGET_DEPTH_LARGE as u8{
+        if count < TARGET_DEPTH_LARGE_ARRAY as u8{
             peak_hashes[count as usize] = new_peak_hash;
             peak_depths[count as usize] = new_peak_depth;
             count += 1;
@@ -503,6 +460,51 @@ impl MerkleMountainRange {
         }
         true
     }
+    pub fn get_deep_root(&self)->[u8;32]{
+        let current_depth= next_power_of_two_batch(self.batch_number as usize);
+        self.deepen(current_depth, TARGET_DEPTH_LARGE)
+    }
 }
  
 
+// use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
+
+//SPL token causes a shit ton of dependencies issues
+// #[derive(Accounts)]
+// pub struct DepositVariableToken<'info> {
+//     // your existing pool PDA:
+//     #[account(mut, seeds = [b"variable_pool", &pool.identifier], bump)]
+//     pub pool: Account<'info, MerkleMountainRange>,
+
+//     // payer of the deposit:
+//     #[account(mut)]
+//     pub depositor: Signer<'info>,
+
+//     /// SYSVAR_INSTRUCTIONS for reading the memo
+//     ///CHECK:
+//     pub instruction_account: AccountInfo<'info>,
+
+//     // the depositor’s associated token account:
+//     #[account(mut,
+//         associated_token::mint = asset_mint,
+//         associated_token::authority = depositor
+//     )]
+//     pub depositor_ata: Account<'info, TokenAccount>,
+
+//     // the pool’s associated token account, must be created ahead of time:
+//     #[account(mut,
+//         associated_token::mint = asset_mint,
+//         associated_token::authority = pool
+//     )]
+//     pub pool_ata: Account<'info, TokenAccount>,
+
+//     // which mint we’re depositing:
+//     pub asset_mint: Account<'info, Mint>,
+
+//     // the CPI programs:
+//     pub token_program: Program<'info, Token>,
+//     pub associated_token_program: Program<'info, AssociatedToken>,
+
+//     pub system_program: Program<'info, System>,
+//     pub rent: Sysvar<'info, Rent>,
+// }

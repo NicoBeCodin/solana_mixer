@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-solnado = "Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC"
+solnado = "2xJgeatVVK3u3SNf4pyXuLuc2UrzEQBprPds2qfJSuEt"
 
 [programs.devnet]
-solnado = "Ag36R1MUAHhyAYB96aR3JAScLqE6YFNau81iCcf2Y6RC"
+solnado = "2xJgeatVVK3u3SNf4pyXuLuc2UrzEQBprPds2qfJSuEt"
 
 [registry]
 url = "https://api.apr.dev"

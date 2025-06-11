@@ -2279,6 +2279,7 @@ dependencies = [
  "ark-serialize 0.3.0",
  "ark-snark",
  "base64 0.21.7",
+ "bytemuck",
  "groth16-solana",
  "hex",
  "num-bigint",

@@ -92,5 +92,20 @@ pub enum ErrorCode {
     #[msg("Invalid withdrawer key")]
     InvalidWithdrawerKey,
 
+    #[msg("Invalid asset ID")]
+    InvalidAssetId,
 
+    #[msg("Invalid shard memo")]
+    InvalidNullifierShardMemo,
+    
+    #[msg("Invalid shard selection")]
+    InvalidShardSelection,
+
+    #[msg("Shard isn't full")]
+    ShardNotFull,
+
+    #[msg("Invalid nullifier prefix bits")]
+    InvalidNullifierBits,
+
+    
 }
