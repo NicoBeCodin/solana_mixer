@@ -11,7 +11,7 @@ use anchor_lang::solana_program::{
     system_instruction,
     sysvar::instructions,
 };
-
+use crate::shard::*;
 use base64::{engine::general_purpose, Engine as _};
 pub const DEFAULT_LEAF: [u8; 32] = [0u8; 32];
 pub const TREE_DEPTH: u8 = 4;
@@ -331,6 +331,8 @@ pub mod solnado {
         }
         Ok(())
     }
+
+
 
     pub fn combine_deposit<'info>(
         ctx: Context<CombineDeposit>,
@@ -679,6 +681,15 @@ pub mod solnado {
         );
 
         Ok(())
+    }
+
+    pub fn initialize_shards(ctx: Context<InitializeNullifierShards>)->Result<()>{
+        initialize_nullifier_shards(ctx)
+    }
+
+    pub fn withdraw_variable_shard(ctx: Context<WithdrawVariableShard>, mode: u8, proof: [u8; 256], public_inputs: [u8; 136])->Result<()>{
+        withdraw_variable_shard_nullifier(ctx, mode, proof, public_inputs)
+
     }
 
     pub fn deposit(

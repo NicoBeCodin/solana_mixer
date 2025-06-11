@@ -288,7 +288,7 @@ pub struct MerkleMountainRange{
     //Creator fee is optional
     pub creator_fee: u64,
     //I'll add fields for the nullifier manager
-    pub last_nullifiers: [[u8;32]; 4]
+    
 }
 
 impl MerkleMountainRange {

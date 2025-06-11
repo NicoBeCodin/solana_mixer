@@ -4,7 +4,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::system_instruction;
 use borsh::{BorshDeserialize, BorshSerialize};
-pub const SHARD_SIZE: usize = 512;
+pub const SHARD_SIZE: usize = 8;
 use crate::error::ErrorCode;
 use crate::id;
 
@@ -47,7 +47,7 @@ pub struct BitShard {
     pub nullifiers: Vec<[u8; 32]>,
 }
 
-pub fn withdraw_variable(
+pub fn withdraw_variable_shard_nullifier(
     ctx: Context<WithdrawVariableShard>,
     mode: u8,
     proof: [u8; 256],
@@ -304,3 +304,60 @@ pub fn split_shard_and_insert<'info>(
     Ok(())
 }
 
+pub const SHARD_SPACE: usize = 8 + 1 + 32 + 4 + 32 * SHARD_SIZE;
+
+#[derive(Accounts)]
+pub struct InitializeNullifierShards<'info> {
+    /// Your pool PDA (so we can seed the shards off it)
+    #[account(
+        mut,
+        seeds = [ b"variable_pool", &pool.identifier ],
+        bump
+    )]
+    pub pool:       Account<'info, MerkleMountainRange>,
+
+    /// shard for bit=0 at prefix_len=1
+    #[account(
+        init,
+        payer = authority,
+        space = SHARD_SPACE,
+        seeds = [ b"nullifier_shard", pool.identifier.as_ref(), &[1_u8], &[0_u8] ],
+        bump
+    )]
+    pub shard0:     Account<'info, BitShard>,
+
+    /// shard for bit=1 at prefix_len=1
+    #[account(
+        init,
+        payer = authority,
+        space = SHARD_SPACE,
+        seeds = [ b"nullifier_shard", pool.identifier.as_ref(), &[1_u8], &[1_u8] ],
+        bump
+    )]
+    pub shard1:     Account<'info, BitShard>,
+
+    #[account(mut)]
+    pub authority:  Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+pub fn initialize_nullifier_shards(
+    ctx: Context<InitializeNullifierShards>
+) -> Result<()> {
+    // shard0: prefix_len=1, prefix bit=0
+    let s0 = &mut ctx.accounts.shard0;
+    s0.prefix_len = 1;
+    s0.prefix = [0u8; 8];        // all bits zero
+    s0.nullifiers = Vec::new();
+
+    // shard1: prefix_len=1, prefix bit=1
+    let s1 = &mut ctx.accounts.shard1;
+    s1.prefix_len = 1;
+    let mut p1 = [0u8; 8];
+    p1[0] = 0b1000_0000;           // set the high bit
+    s1.prefix = p1;
+    s1.nullifiers = Vec::new();
+
+    Ok(())
+}
