@@ -38,6 +38,8 @@ const ON_BEHALF_FEE: u64 = 10_000;
 
 //The subtreeIndexer when called should be called with the LeavesIndexer too
 //Updating the small batch root isn't important as long as we don't post the batch.
+
+//The deep root needs to be calcualted at most once per batch, and
 #[program]
 pub mod solnado {
     use super::*;
@@ -692,295 +694,298 @@ pub mod solnado {
 
     }
 
-    pub fn deposit(
-        ctx: Context<Deposit>,
-        leaf_hash: [u8; 32], //leaves_info: [u8; 520]
-    ) -> Result<()> {
-        let pool_info = ctx.accounts.pool.to_account_info();
-        let pool_batch = ctx.accounts.pool.batch_number.clone();
-        let pool = &mut ctx.accounts.pool;
+//The following code is from the fixed deposit amount pool prototype, not useful anymore
 
-        let free = pool.find_first_match();
-        let sysvar_account = &ctx.accounts.instruction_account;
 
-        // Load the full instruction list (memo should be at index 0 based on your tx order)
-        let maybe_memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
+    // pub fn deposit(
+    //     ctx: Context<Deposit>,
+    //     leaf_hash: [u8; 32], //leaves_info: [u8; 520]
+    // ) -> Result<()> {
+    //     let pool_info = ctx.accounts.pool.to_account_info();
+    //     let pool_batch = ctx.accounts.pool.batch_number.clone();
+    //     let pool = &mut ctx.accounts.pool;
 
-        // Verify that it's the Memo program
-        let memo_program_id = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
-        if maybe_memo_ix.program_id != memo_program_id {
-            msg!("First instruction is not a Memo, skipping decoding");
-            return Err(ErrorCode::MissingMemoInstruction.into());
-        }
+    //     let free = pool.find_first_match();
+    //     let sysvar_account = &ctx.accounts.instruction_account;
 
-        // Memo data is a UTF-8 base64 string
-        let memo_base64 =
-            std::str::from_utf8(&maybe_memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+    //     // Load the full instruction list (memo should be at index 0 based on your tx order)
+    //     let maybe_memo_ix = instructions::load_instruction_at_checked(0, sysvar_account)?;
 
-        let memo_bytes = general_purpose::STANDARD
-            .decode(memo_base64)
-            .map_err(|_| ErrorCode::InvalidMemoBase64)?;
-        // Now you have back the original Buffer.concat([batchNumber, leaves])
-        if memo_bytes.len() != 520 {
-            msg!("Memo bytes length invalid: got {}", memo_bytes.len());
-            return Err(ErrorCode::InvalidMemoLength.into());
-        }
+    //     // Verify that it's the Memo program
+    //     let memo_program_id = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+    //     if maybe_memo_ix.program_id != memo_program_id {
+    //         msg!("First instruction is not a Memo, skipping decoding");
+    //         return Err(ErrorCode::MissingMemoInstruction.into());
+    //     }
 
-        // Extract the batch number and leaves from the memo
-        let user_batch_number = u64::from_be_bytes(
-            memo_bytes[0..8]
-                .try_into()
-                .map_err(|_| ErrorCode::FailedToParseBatch)?,
-        );
+    //     // Memo data is a UTF-8 base64 string
+    //     let memo_base64 =
+    //         std::str::from_utf8(&maybe_memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
 
-        let mut user_leaves: [[u8; 32]; 16] = [[0u8; 32]; 16];
-        for i in 0..16 {
-            user_leaves[i].copy_from_slice(&memo_bytes[8 + i * 32..8 + (i + 1) * 32]);
-        }
+    //     let memo_bytes = general_purpose::STANDARD
+    //         .decode(memo_base64)
+    //         .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+    //     // Now you have back the original Buffer.concat([batchNumber, leaves])
+    //     if memo_bytes.len() != 520 {
+    //         msg!("Memo bytes length invalid: got {}", memo_bytes.len());
+    //         return Err(ErrorCode::InvalidMemoLength.into());
+    //     }
 
-        msg!("User batch number from memo: {}", user_batch_number);
-        msg!("First leaf in memo: {:?}", user_leaves[0]);
+    //     // Extract the batch number and leaves from the memo
+    //     let user_batch_number = u64::from_be_bytes(
+    //         memo_bytes[0..8]
+    //             .try_into()
+    //             .map_err(|_| ErrorCode::FailedToParseBatch)?,
+    //     );
 
-        // OPTIONAL: Compare to current pool state
-        if &user_batch_number != &pool_batch {
-            return Err(ErrorCode::InvalidUserBatchNumber.into());
-        }
+    //     let mut user_leaves: [[u8; 32]; 16] = [[0u8; 32]; 16];
+    //     for i in 0..16 {
+    //         user_leaves[i].copy_from_slice(&memo_bytes[8 + i * 32..8 + (i + 1) * 32]);
+    //     }
 
-        if free <= 15 {
-            let transfer_instruction = system_instruction::transfer(
-                &ctx.accounts.depositor.key(),
-                &*pool_info.key,
-                pool.min_deposit_amount,
-            );
+    //     msg!("User batch number from memo: {}", user_batch_number);
+    //     msg!("First leaf in memo: {:?}", user_leaves[0]);
 
-            let _ = invoke(
-                &transfer_instruction,
-                &[ctx.accounts.depositor.to_account_info(), pool_info],
-            );
-            let start_index = free;
-            msg!("Transfered {} lamports to pool", FIXED_DEPOSIT_AMOUNT);
-            // let pool = &mut ctx.accounts.pool;
-            pool.batch_leaves[start_index] = leaf_hash;
+    //     // OPTIONAL: Compare to current pool state
+    //     if &user_batch_number != &pool_batch {
+    //         return Err(ErrorCode::InvalidUserBatchNumber.into());
+    //     }
 
-            msg!("Leaf {:?} \nadded at index {}", leaf_hash, start_index);
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //     if free <= 15 {
+    //         let transfer_instruction = system_instruction::transfer(
+    //             &ctx.accounts.depositor.key(),
+    //             &*pool_info.key,
+    //             pool.min_deposit_amount,
+    //         );
 
-            if &user_leaves != &pool.batch_leaves {
-                msg!("Leaves mismatch!");
-                return Err(ErrorCode::InvalidUserLeaves.into());
-            }
+    //         let _ = invoke(
+    //             &transfer_instruction,
+    //             &[ctx.accounts.depositor.to_account_info(), pool_info],
+    //         );
+    //         let start_index = free;
+    //         msg!("Transfered {} lamports to pool", FIXED_DEPOSIT_AMOUNT);
+    //         // let pool = &mut ctx.accounts.pool;
+    //         pool.batch_leaves[start_index] = leaf_hash;
 
-            msg!("New root of temporary pool is {:?}", pool.merkle_root_batch);
-            if free == 15 {
-                //After adding the leaf we create a new temporary pool
-                msg!(
-                    "Temporary pool is now at max capacity, storing the hash and creating a new one"
-                );
-                //After adding the leaf, we need to create a new pool
-                let new_batch = pool.merkle_root_batch;
-                pool.update_peaks(new_batch);
-                pool.batch_number += 1;
-                msg!("New batch number {}", pool.batch_number);
+    //         msg!("Leaf {:?} \nadded at index {}", leaf_hash, start_index);
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
 
-                let new_root = pool.compute_root_from_peaks();
-                let current_depth = next_power_of_two_batch(pool.batch_number as usize);
-                pool.whole_tree_root = new_root;
-                msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
-                let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
-                msg!(
-                    "Computed deep root with target depth: {} \n{:?}",
-                    TARGET_DEPTH,
-                    deep_root
-                );
+    //         if &user_leaves != &pool.batch_leaves {
+    //             msg!("Leaves mismatch!");
+    //             return Err(ErrorCode::InvalidUserLeaves.into());
+    //         }
 
-                // Clear the pool leaves
-                pool.batch_leaves = default_leaves();
-                pool.merkle_root_batch = get_root(&pool.batch_leaves);
-            }
-            Ok(())
-        } else {
-            return Err(ErrorCode::InvalidIndexing.into());
-        }
-    }
+    //         msg!("New root of temporary pool is {:?}", pool.merkle_root_batch);
+    //         if free == 15 {
+    //             //After adding the leaf we create a new temporary pool
+    //             msg!(
+    //                 "Temporary pool is now at max capacity, storing the hash and creating a new one"
+    //             );
+    //             //After adding the leaf, we need to create a new pool
+    //             let new_batch = pool.merkle_root_batch;
+    //             pool.update_peaks(new_batch);
+    //             pool.batch_number += 1;
+    //             msg!("New batch number {}", pool.batch_number);
 
-    pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.payer.key(),
-            ADMIN_KEY,
-            ErrorCode::UnauthorizedAction
-        );
-        Ok(())
-    }
+    //             let new_root = pool.compute_root_from_peaks();
+    //             let current_depth = next_power_of_two_batch(pool.batch_number as usize);
+    //             pool.whole_tree_root = new_root;
+    //             msg!("New root of the whole tree: {:?}", &pool.whole_tree_root);
+    //             let deep_root = pool.deepen(current_depth, TARGET_DEPTH);
+    //             msg!(
+    //                 "Computed deep root with target depth: {} \n{:?}",
+    //                 TARGET_DEPTH,
+    //                 deep_root
+    //             );
 
-    pub fn withdraw_from_treasury(ctx: Context<WithdrawFromTreasury>, amount: u64) -> Result<()> {
-        // Check authority
-        require_keys_eq!(
-            ctx.accounts.authority.key(),
-            ADMIN_KEY,
-            ErrorCode::UnauthorizedAction
-        );
+    //             // Clear the pool leaves
+    //             pool.batch_leaves = default_leaves();
+    //             pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //         }
+    //         Ok(())
+    //     } else {
+    //         return Err(ErrorCode::InvalidIndexing.into());
+    //     }
+    // }
 
-        // Transfer lamports from PDA to authority
-        **ctx
-            .accounts
-            .treasury
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= amount;
-        **ctx
-            .accounts
-            .authority
-            .to_account_info()
-            .try_borrow_mut_lamports()? += amount;
+    // pub fn initialize_treasury(ctx: Context<InitializeTreasury>) -> Result<()> {
+    //     require_keys_eq!(
+    //         ctx.accounts.payer.key(),
+    //         ADMIN_KEY,
+    //         ErrorCode::UnauthorizedAction
+    //     );
+    //     Ok(())
+    // }
 
-        Ok(())
-    }
+    // pub fn withdraw_from_treasury(ctx: Context<WithdrawFromTreasury>, amount: u64) -> Result<()> {
+    //     // Check authority
+    //     require_keys_eq!(
+    //         ctx.accounts.authority.key(),
+    //         ADMIN_KEY,
+    //         ErrorCode::UnauthorizedAction
+    //     );
 
-    pub fn withdraw(
-        ctx: Context<Withdraw>,
-        proof: [u8; 256],        // Real proof (a,b and c)
-        public_inputs: [u8; 64], //root & nullifier hash
-    ) -> Result<()> {
-        let pool = &ctx.accounts.pool;
+    //     // Transfer lamports from PDA to authority
+    //     **ctx
+    //         .accounts
+    //         .treasury
+    //         .to_account_info()
+    //         .try_borrow_mut_lamports()? -= amount;
+    //     **ctx
+    //         .accounts
+    //         .authority
+    //         .to_account_info()
+    //         .try_borrow_mut_lamports()? += amount;
 
-        if proof.len() != 256 {
-            msg!("Invalid proof length!");
-            return Err(ErrorCode::InvalidArgument.into());
-        }
+    //     Ok(())
+    // }
 
-        let nullifier_hash: &[u8; 32] = public_inputs[0..32]
-            .try_into()
-            .expect("Failed converting nullifier to hash");
-        let public_input_root: [u8; 32] = public_inputs[32..64]
-            .try_into()
-            .expect("Failed converting the public_input root");
+    // pub fn withdraw(
+    //     ctx: Context<Withdraw>,
+    //     proof: [u8; 256],        // Real proof (a,b and c)
+    //     public_inputs: [u8; 64], //root & nullifier hash
+    // ) -> Result<()> {
+    //     let pool = &ctx.accounts.pool;
 
-        //Nullifier pda creation to store nullifier hash
-        // This is now done with an anchor constraint
-        // let (nullifier_pda, bump) =
-        //     Pubkey::find_program_address(&[nullifier_hash.as_ref()], ctx.program_id);
-        // if &nullifier_pda != nullifier_account.key {
-        //     msg!("The provided nullifier account and nullifier derived pda do not match.");
-        //     return Err(ErrorCode::InvalidNullifierAccount.into());
-        // }
+    //     if proof.len() != 256 {
+    //         msg!("Invalid proof length!");
+    //         return Err(ErrorCode::InvalidArgument.into());
+    //     }
 
-        let nullifier_account = &ctx.accounts.nullifier_account;
-        if nullifier_account.lamports() != 0 {
-            msg!("The nullifier account balance is not zero, it has already been initialized");
-            return Err(ErrorCode::NullifierAlreadyUsed.into());
-        }
-        require!(
-            ctx.accounts.pool_creator.key() == pool.creator,
-            ErrorCode::InvalidPoolCreator
-        );
+    //     let nullifier_hash: &[u8; 32] = public_inputs[0..32]
+    //         .try_into()
+    //         .expect("Failed converting nullifier to hash");
+    //     let public_input_root: [u8; 32] = public_inputs[32..64]
+    //         .try_into()
+    //         .expect("Failed converting the public_input root");
 
-        // Otherwise, create the account.
-        // (Assume a minimal account size of 8 bytes; adjust as needed.)
-        let rent = Rent::get()?;
+    //     //Nullifier pda creation to store nullifier hash
+    //     // This is now done with an anchor constraint
+    //     // let (nullifier_pda, bump) =
+    //     //     Pubkey::find_program_address(&[nullifier_hash.as_ref()], ctx.program_id);
+    //     // if &nullifier_pda != nullifier_account.key {
+    //     //     msg!("The provided nullifier account and nullifier derived pda do not match.");
+    //     //     return Err(ErrorCode::InvalidNullifierAccount.into());
+    //     // }
 
-        let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
-        // let create_ix = system_instruction::create_account(
-        //     &ctx.accounts.withdrawer.key(), // payer
-        //     &nullifier_pda,                 // new account address
-        //     rent_lamports,
-        //     MIN_PDA_SIZE as u64,
-        //     ctx.program_id, // owner: our program
-        // );
-        // let seeds = &[nullifier_hash.as_ref(), &[bump]];
-        // invoke_signed(
-        //     &create_ix,
-        //     &[
-        //         ctx.accounts.withdrawer.to_account_info(),
-        //         nullifier_account.clone(),
-        //         ctx.accounts.system_program.to_account_info(),
-        //     ],
-        //     &[seeds],
-        // )?;
+    //     let nullifier_account = &ctx.accounts.nullifier_account;
+    //     if nullifier_account.lamports() != 0 {
+    //         msg!("The nullifier account balance is not zero, it has already been initialized");
+    //         return Err(ErrorCode::NullifierAlreadyUsed.into());
+    //     }
+    //     require!(
+    //         ctx.accounts.pool_creator.key() == pool.creator,
+    //         ErrorCode::InvalidPoolCreator
+    //     );
 
-        msg!("Creating nullifier PDA costs {} lamports", rent_lamports);
+    //     // Otherwise, create the account.
+    //     // (Assume a minimal account size of 8 bytes; adjust as needed.)
+    //     let rent = Rent::get()?;
 
-        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? -= rent_lamports;
-        **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
+    //     let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
+    //     // let create_ix = system_instruction::create_account(
+    //     //     &ctx.accounts.withdrawer.key(), // payer
+    //     //     &nullifier_pda,                 // new account address
+    //     //     rent_lamports,
+    //     //     MIN_PDA_SIZE as u64,
+    //     //     ctx.program_id, // owner: our program
+    //     // );
+    //     // let seeds = &[nullifier_hash.as_ref(), &[bump]];
+    //     // invoke_signed(
+    //     //     &create_ix,
+    //     //     &[
+    //     //         ctx.accounts.withdrawer.to_account_info(),
+    //     //         nullifier_account.clone(),
+    //     //         ctx.accounts.system_program.to_account_info(),
+    //     //     ],
+    //     //     &[seeds],
+    //     // )?;
 
-        // Mark the PDA as rent-exempt by allocating space & assigning ownership
-        ctx.accounts
-            .nullifier_account
-            .realloc(MIN_PDA_SIZE, false)?;
-        ctx.accounts.nullifier_account.assign(ctx.program_id);
+    //     msg!("Creating nullifier PDA costs {} lamports", rent_lamports);
 
-        let depth = next_power_of_two_batch(pool.batch_number as usize);
-        msg!("Current depth: {}", depth);
+    //     **ctx.accounts.withdrawer.try_borrow_mut_lamports()? -= rent_lamports;
+    //     **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
 
-        //This allows to deepen the tree to match a certain size
-        let deepen_root = pool.deepen(depth, TARGET_DEPTH);
-        if deepen_root != public_input_root {
-            msg!("Deepened root isn't same as public_input_root");
-            msg!(
-                "Deepen root {:?}\n public_input_root {:?}",
-                deepen_root,
-                public_input_root
-            );
-            return Err(ErrorCode::InvalidPublicInputRoot.into());
-        }
+    //     // Mark the PDA as rent-exempt by allocating space & assigning ownership
+    //     ctx.accounts
+    //         .nullifier_account
+    //         .realloc(MIN_PDA_SIZE, false)?;
+    //     ctx.accounts.nullifier_account.assign(ctx.program_id);
 
-        msg!("Public input root: {:?}", public_input_root);
-        msg!("Submitted nullifier hash: {:?}", nullifier_hash);
-        msg!("Verifying proof...");
-        //Nullifier logic before checking the proof
-        verify_withdraw_fixed_proof(&proof, &public_inputs)
-            .map_err(|_e| ErrorCode::InvalidProof)?;
+    //     let depth = next_power_of_two_batch(pool.batch_number as usize);
+    //     msg!("Current depth: {}", depth);
 
-        let withdraw_pool_amount = pool.min_deposit_amount;
+    //     //This allows to deepen the tree to match a certain size
+    //     let deepen_root = pool.deepen(depth, TARGET_DEPTH);
+    //     if deepen_root != public_input_root {
+    //         msg!("Deepened root isn't same as public_input_root");
+    //         msg!(
+    //             "Deepen root {:?}\n public_input_root {:?}",
+    //             deepen_root,
+    //             public_input_root
+    //         );
+    //         return Err(ErrorCode::InvalidPublicInputRoot.into());
+    //     }
 
-        let withdrawer_amount = pool
-            .min_deposit_amount
-            .checked_sub(pool.creator_fee)
-            .unwrap()
-            .checked_sub(PROGRAM_FEE)
-            .unwrap();
-        let creator_amount = pool.creator_fee;
+    //     msg!("Public input root: {:?}", public_input_root);
+    //     msg!("Submitted nullifier hash: {:?}", nullifier_hash);
+    //     msg!("Verifying proof...");
+    //     //Nullifier logic before checking the proof
+    //     verify_withdraw_fixed_proof(&proof, &public_inputs)
+    //         .map_err(|_e| ErrorCode::InvalidProof)?;
 
-        **ctx
-            .accounts
-            .pool
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= withdraw_pool_amount;
+    //     let withdraw_pool_amount = pool.min_deposit_amount;
 
-        **ctx
-            .accounts
-            .treasury
-            .to_account_info()
-            .try_borrow_mut_lamports()? += PROGRAM_FEE;
-        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += withdrawer_amount;
-        **ctx.accounts.pool_creator.try_borrow_mut_lamports()? += creator_amount;
-        msg!(
-            "Withdrew {} lamports from pool\nTransfered {} lamports to user\n Transfered {} to pool creator",
-            withdraw_pool_amount,
-            withdrawer_amount,
-            creator_amount,
-        );
+    //     let withdrawer_amount = pool
+    //         .min_deposit_amount
+    //         .checked_sub(pool.creator_fee)
+    //         .unwrap()
+    //         .checked_sub(PROGRAM_FEE)
+    //         .unwrap();
+    //     let creator_amount = pool.creator_fee;
 
-        Ok(())
-    }
+    //     **ctx
+    //         .accounts
+    //         .pool
+    //         .to_account_info()
+    //         .try_borrow_mut_lamports()? -= withdraw_pool_amount;
 
-    /// Transfers `amount` lamports from the pool PDA to a recipient
-    /// This will be deleted in final version
-    pub fn admin_transfer(ctx: Context<AdminTransfer>, amount: u64, identifier: u64) -> Result<()> {
-        let pool_info = &ctx.accounts.pool;
+    //     **ctx
+    //         .accounts
+    //         .treasury
+    //         .to_account_info()
+    //         .try_borrow_mut_lamports()? += PROGRAM_FEE;
+    //     **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += withdrawer_amount;
+    //     **ctx.accounts.pool_creator.try_borrow_mut_lamports()? += creator_amount;
+    //     msg!(
+    //         "Withdrew {} lamports from pool\nTransfered {} lamports to user\n Transfered {} to pool creator",
+    //         withdraw_pool_amount,
+    //         withdrawer_amount,
+    //         creator_amount,
+    //     );
 
-        let recipient_info = &ctx.accounts.recipient;
+    //     Ok(())
+    // }
 
-        // Derive the pool PDA from the identifier.
-        let seed = identifier.to_le_bytes();
-        let seeds: &[&[u8]] = &[b"pool_merkle", &seed];
-        let (pda, _) = Pubkey::find_program_address(seeds, ctx.program_id);
-        require!(pda == *pool_info.key, ErrorCode::InvalidPoolAccount);
+    // /// Transfers `amount` lamports from the pool PDA to a recipient
+    // /// This will be deleted in final version
+    // pub fn admin_transfer(ctx: Context<AdminTransfer>, amount: u64, identifier: u64) -> Result<()> {
+    //     let pool_info = &ctx.accounts.pool;
 
-        **pool_info.try_borrow_mut_lamports()? -= amount;
-        **recipient_info.try_borrow_mut_lamports()? += amount;
-        msg!("Succesfully transfered {} lamports", amount);
+    //     let recipient_info = &ctx.accounts.recipient;
 
-        Ok(())
-    }
+    //     // Derive the pool PDA from the identifier.
+    //     let seed = identifier.to_le_bytes();
+    //     let seeds: &[&[u8]] = &[b"pool_merkle", &seed];
+    //     let (pda, _) = Pubkey::find_program_address(seeds, ctx.program_id);
+    //     require!(pda == *pool_info.key, ErrorCode::InvalidPoolAccount);
+
+    //     **pool_info.try_borrow_mut_lamports()? -= amount;
+    //     **recipient_info.try_borrow_mut_lamports()? += amount;
+    //     msg!("Succesfully transfered {} lamports", amount);
+
+    //     Ok(())
+    // }
 
     // use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
 
