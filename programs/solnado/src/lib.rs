@@ -9,10 +9,10 @@ use crate::utils::*;
 use anchor_lang::solana_program::{
     program::{invoke, invoke_signed},
     system_instruction,
-    sysvar::instructions,
+    
 };
 use crate::shard::*;
-use base64::{engine::general_purpose, Engine as _};
+
 pub const DEFAULT_LEAF: [u8; 32] = [0u8; 32];
 pub const TREE_DEPTH: u8 = 4;
 pub const LEAVES_LENGTH: usize = 16;
