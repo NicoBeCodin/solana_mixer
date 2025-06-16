@@ -107,5 +107,6 @@ pub enum ErrorCode {
     #[msg("Invalid nullifier prefix bits")]
     InvalidNullifierBits,
 
-    
+    #[msg("Invalid mode selection")]
+    InvalidMode,   
 }

@@ -1,14 +1,14 @@
+use crate::error::ErrorCode;
+use crate::id;
 use crate::utils::*;
 use crate::MerkleMountainRange;
+use crate::{BATCHES_PER_SMALL_TREE, LEAVES_LENGTH};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::system_instruction;
 use borsh::{BorshDeserialize, BorshSerialize};
-pub const SHARD_SIZE: usize = 8;
-use crate::error::ErrorCode;
-use crate::id;
-
 //The pool fee covers nullifier storage
+pub const SHARD_SIZE: usize = 8;
 pub const POOL_FEE: u64 = 300_000;
 pub const PREFIX_LENGTH: usize = 8;
 
@@ -25,33 +25,503 @@ pub struct WithdrawVariableShard<'info> {
     pub pool: Account<'info, MerkleMountainRange>,
 
     ///CHECK :The nullifier shard
-    pub nullifier_shard: AccountInfo<'info>,
+    pub nullifier_shard: Account<'info, BitShard>,
 
     #[account(mut)]
     pub user: Signer<'info>,
 
+    ///CHECK: SYSVAR_INSTRUCTIONS must be passed to read the Memo
+    pub instruction_account: AccountInfo<'info>,
+
     pub system_program: Program<'info, System>,
 
     ///CHECK: This can be used by different functions
-    dummy0_account: AccountInfo<'info>,
+    #[account(mut)]
+    pub dummy0_account: AccountInfo<'info>,
     ///CHECK: This can be used by different functions
-    dummy1_account: AccountInfo<'info>,
+    #[account(mut)]
+    pub dummy1_account: AccountInfo<'info>,
 }
 
+//For combine deposit where we nullify only 1 leaf
+#[derive(Accounts)]
+pub struct CombineDepositShardSingle<'info> {
+    #[account(
+        mut,
+        seeds = [b"variable_pool".as_ref(), &pool.identifier],
+        bump
+    )]
+    pub pool: Account<'info, MerkleMountainRange>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    /// SYSVAR_INSTRUCTIONS must be passed to read the Memo
+    ///CHECK:
+    pub instruction_account: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+
+    /// CHECK: This is always present
+    #[account(mut)]
+    pub nullifier_shard: Account<'info, BitShard>,
+
+    ///CHECK: This can be used by different functions
+    #[account(mut)]
+    pub dummy0_account: AccountInfo<'info>,
+    ///CHECK: This can be used by different functions
+    #[account(mut)]
+    pub dummy1_account: AccountInfo<'info>,
+}
+
+//Corresponds to mode 1
+pub fn combine_deposit_shard_single_nullifier<'info>(
+    ctx: Context<CombineDepositShardSingle>,
+    proof: [u8; 256],
+    public_inputs: [u8; 128],
+) -> Result<()> {
+    let pool = &ctx.accounts.pool;
+    let sysvar = &ctx.accounts.instruction_account;
+
+    let deep_root = pool.get_deep_root();
+    let mut pi = public_inputs;
+
+    let offset = 96;
+
+    // overwrite that slice with our on-chain root
+    pi[offset..offset + 32].copy_from_slice(&deep_root);
+
+    //Unpack the nullifier
+    let (n, leaf1, leaf2, r) =
+        verify_one_null_two_leaves(&proof, &pi).map_err(|_| ErrorCode::InvalidProof)?;
+
+    let shard = &mut ctx.accounts.nullifier_shard;
+    //We take the data from the shard account
+    process_one_nullifier(
+        &ctx.accounts.pool,
+        &shard.to_account_info(),
+        shard,
+        &ctx.accounts.dummy0_account,
+        &ctx.accounts.dummy1_account,
+        n,
+        &ctx.accounts.user.to_account_info(),
+        &ctx.accounts.system_program,
+        ctx.program_id,
+    )?;
+
+
+    let pool = &mut ctx.accounts.pool;
+
+    for leaf in [leaf1, leaf2].iter() {
+        let idx = pool.find_first_match();
+        pool.batch_leaves[idx] = *leaf;
+        pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+        // a) first sub‐batch boundary?
+        if idx + 1 == SUB_BATCH_SIZE {
+            let expected_idxr = Pubkey::find_program_address(
+                &[b"leaves_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+            let indexer_account_key = ctx.remaining_accounts[0].key;
+
+            require!(
+                expected_idxr == *indexer_account_key,
+                ErrorCode::InvalidIndexerAccount
+            );
+
+            enforce_sub_batch_memo(
+                &sysvar,
+                pool.batch_number,
+                &pool.batch_leaves[..SUB_BATCH_SIZE],
+            )?;
+        }
+        // b) second boundary → rollover
+        else if idx + 1 == LEAVES_LENGTH {
+            let expected_idxr = Pubkey::find_program_address(
+                &[b"leaves_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+
+            let indexer_account_key = ctx.remaining_accounts[0].key;
+
+            require!(
+                expected_idxr == *indexer_account_key,
+                ErrorCode::InvalidIndexerAccount
+            );
+            enforce_sub_batch_memo(
+                &sysvar,
+                pool.batch_number,
+                &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+            )?;
+
+            // rollover:
+            let batch_root = pool.merkle_root_batch;
+            pool.update_peaks(batch_root);
+            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+            pool.whole_tree_root = pool.compute_root_from_peaks();
+        }
+        // c) small‐tree boundary? Post the subtree root of the previuous subtree when first depositing
+        else if pool.batch_number % BATCHES_PER_SMALL_TREE == 0 && idx == 0 {
+            let expected_subtree_indexer = Pubkey::find_program_address(
+                &[b"subtree_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+            let expected_leaves_indexer = Pubkey::find_program_address(
+                &[b"leaves_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+
+            let leaves_indexer_key = ctx.remaining_accounts[0].key;
+            let subtree_indexer_key = ctx.remaining_accounts[1].key;
+
+            require!(
+                expected_leaves_indexer == *leaves_indexer_key,
+                ErrorCode::InvalidIndexerAccount
+            );
+            require!(
+                expected_subtree_indexer == *subtree_indexer_key,
+                ErrorCode::InvalidIndexerAccount
+            );
+            enforce_small_tree_memo(&sysvar, pool.batch_number - 1, pool.last_small_tree_root)?;
+        }
+    }
+
+    Ok(())
+}
+
+
+#[derive(Accounts)]
+pub struct CombineDepositShardDouble<'info> {
+    #[account(
+        mut,
+        seeds = [b"variable_pool".as_ref(), &pool.identifier],
+        bump
+    )]
+    pub pool: Account<'info, MerkleMountainRange>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    ///CHECK: SYSVAR_INSTRUCTIONS must be passed to read the Memo
+    pub instruction_account: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+
+    /// CHECK: This is always present
+    #[account(mut)]
+    pub nullifier_shard1: Account<'info, BitShard>,
+
+    ///CHECK: For the splitting of the first shard
+    #[account(mut)]
+    pub dummy10_account: AccountInfo<'info>,
+    ///CHECK: For the splitting of the first shard
+    #[account(mut)]
+    pub dummy11_account: AccountInfo<'info>,
+
+    ///CHECK : Second nullfier shard, might be useless if both nullifers are supposed to go on same shard
+    #[account(mut)]
+    pub nullifier_shard2: AccountInfo<'info>,
+    //this is a temporary adjustement, needs to be solved to allow for the edge case of two shards being full at the same time and being split
+    //Currently this blows up the stack size
+    // /CHECK: For the splitting of the second shard
+    // #[account(mut)]
+    // pub dummy20_account: AccountInfo<'info>,
+    // ///CHECK: For the splitting of the second shard
+    // #[account(mut)]
+    // pub dummy21_account: AccountInfo<'info>,
+}
+
+pub fn combine_deposit_shard_double_nullifier<'info>(
+    ctx: Context<CombineDepositShardDouble>,
+    same_shard: u8,
+    proof: [u8; 256],
+    public_inputs: [u8; 128],
+) -> Result<()> {
+    let pool = &ctx.accounts.pool;
+    let sysvar = &ctx.accounts.instruction_account;
+
+    let deep_root = pool.get_deep_root();
+    let mut pi = public_inputs;
+    let offset = 96;
+    // overwrite that slice with our on-chain root
+    pi[offset..offset + 32].copy_from_slice(&deep_root);
+
+    // --- two nullifiers → one leaf (old behavior) ---
+    let (n1, n2, leaf, r) =
+        verify_combine_proof(&proof, &pi).map_err(|_| ErrorCode::InvalidProof)?;
+
+    let shard1 = &mut ctx.accounts.nullifier_shard1;
+    process_one_nullifier(
+        &ctx.accounts.pool,
+        &shard1.to_account_info(),
+        shard1,
+        &ctx.accounts.dummy10_account,
+        &ctx.accounts.dummy11_account,
+        n1,
+        &ctx.accounts.user.to_account_info(),
+        &ctx.accounts.system_program,
+        ctx.program_id,
+    )?;
+
+    if same_shard == 1 {
+        process_one_nullifier(
+            &ctx.accounts.pool,
+            &shard1.to_account_info(),
+            shard1,
+            &ctx.accounts.dummy10_account,
+            &ctx.accounts.dummy11_account,
+            n2,
+            &ctx.accounts.user.to_account_info(),
+            &ctx.accounts.system_program,
+            ctx.program_id,
+        )?;
+    } else {
+        process_one_nullifier_ai(
+            &ctx.accounts.pool,
+            &ctx.accounts.nullifier_shard2.to_account_info(),
+            &ctx.accounts.dummy10_account,
+            &ctx.accounts.dummy11_account,
+            n2,
+            &ctx.accounts.user.to_account_info(),
+            &ctx.accounts.system_program,
+            ctx.program_id,
+        )?;
+    }
+
+    let idx = pool.find_first_match() as usize;
+    let pool = &mut ctx.accounts.pool;
+    pool.batch_leaves[idx] = leaf;
+    pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    // a) first sub‐batch boundary?
+    if idx + 1 == SUB_BATCH_SIZE {
+        let expected_idxr =
+            Pubkey::find_program_address(&[b"leaves_indexer", &pool.identifier], ctx.program_id).0;
+
+        let indexer_account_key = ctx.remaining_accounts[0].key;
+
+        require!(
+            expected_idxr == *indexer_account_key,
+            ErrorCode::InvalidIndexerAccount
+        );
+
+        enforce_sub_batch_memo(
+            &sysvar,
+            pool.batch_number,
+            &pool.batch_leaves[..SUB_BATCH_SIZE],
+        )?;
+    }
+    // b) second boundary → rollover
+    else if idx + 1 == LEAVES_LENGTH {
+        let expected_idxr =
+            Pubkey::find_program_address(&[b"leaves_indexer", &pool.identifier], ctx.program_id).0;
+        let indexer_account_key = ctx.remaining_accounts[0].key;
+
+        require!(
+            expected_idxr == *indexer_account_key,
+            ErrorCode::InvalidIndexerAccount
+        );
+        enforce_sub_batch_memo(
+            &sysvar,
+            pool.batch_number,
+            &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+        )?;
+
+        // rollover:
+        let batch_root = pool.merkle_root_batch;
+        pool.update_peaks(batch_root);
+        pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+        pool.whole_tree_root = pool.compute_root_from_peaks();
+    }
+    // c) small‐tree boundary? Post the subtree root of the previuous subtree when first depositing
+    else if pool.batch_number % BATCHES_PER_SMALL_TREE == 0 && idx == 0 {
+        let expected_st_idxr =
+            Pubkey::find_program_address(&[b"subtree_indexer", &pool.identifier], ctx.program_id).0;
+        let expected_indexer =
+            Pubkey::find_program_address(&[b"leaves_indexer", &pool.identifier], ctx.program_id).0;
+        let (indexer_account_key, subtree_indxr) =
+            (ctx.remaining_accounts[0].key, ctx.remaining_accounts[1].key);
+
+        require!(
+            expected_indexer == *indexer_account_key,
+            ErrorCode::InvalidIndexerAccount
+        );
+        require!(
+            expected_st_idxr == *subtree_indxr,
+            ErrorCode::InvalidIndexerAccount
+        );
+        enforce_small_tree_memo(&sysvar, pool.batch_number - 1, pool.last_small_tree_root)?;
+    }
+    Ok(())
+}
+
+fn process_one_nullifier<'info>(
+    pool: &Account<'info, MerkleMountainRange>,
+    shard_ai: &AccountInfo<'info>,
+    shard: &mut BitShard,
+    child0_ai: &AccountInfo<'info>,
+    child1_ai: &AccountInfo<'info>,
+    null_be: [u8; 32],
+    user_ai: &AccountInfo<'info>,
+    system_program: &Program<'info, System>,
+    program_id: &Pubkey,
+) -> Result<()> {
+    msg!("shard ai key: {} ", shard_ai.key);
+    msg!("shard ai data: {:?}", shard_ai.data);
+    msg!("shard data length: {}", shard_ai.data_len());
+
+    // 2) Prefix check (no Vecs)
+    for bit in 0..shard.prefix_len {
+        let byte = (bit / 8) as usize;
+        let shift = 7 - (bit % 8);
+        let p = (shard.prefix[byte] >> shift) & 1;
+        let n = (null_be[byte] >> shift) & 1;
+        require!(p == n, ErrorCode::InvalidNullifierBits);
+    }
+
+    // 3) Derive & check PDA
+    let (expected_pda, bump) =
+        derive_shard_pda_key(pool.identifier, &shard.prefix, shard.prefix_len);
+    require!(
+        &expected_pda == shard_ai.key,
+        ErrorCode::InvalidShardSelection
+    );
+
+    // 4) Insert or split
+    if shard.nullifiers.len() < SHARD_SIZE {
+        let pos = match shard.nullifiers.binary_search(&null_be) {
+            Ok(_) => return err!(ErrorCode::NullifierAlreadyUsed),
+            Err(p) => p,
+        };
+        shard.nullifiers.insert(pos, null_be);
+        shard.count += 1;
+
+        let info = shard_ai.to_account_info();
+        maybe_grow_shard_account(&info, &shard, &pool.to_account_info(), bump)?;
+    } else {
+        msg!("splitting shard");
+        split_shard_and_insert(
+            shard_ai,
+            child0_ai,
+            child1_ai,
+            &null_be,
+            &pool.identifier,
+            user_ai,
+            system_program,
+            program_id,
+        )?;
+    }
+
+    Ok(())
+}
+
+//Only deserialize if needed
+fn process_one_nullifier_ai<'info>(
+    pool: &Account<'info, MerkleMountainRange>,
+    shard_ai: &AccountInfo<'info>,
+    child0_ai: &AccountInfo<'info>,
+    child1_ai: &AccountInfo<'info>,
+    null_be: [u8; 32],
+    user_ai: &AccountInfo<'info>,
+    system_program: &Program<'info, System>,
+    program_id: &Pubkey,
+) -> Result<()> {
+    msg!("shard ai key: {} ", shard_ai.key);
+    msg!("shard ai data: {:?}", shard_ai.data);
+    msg!("shard data length: {}", shard_ai.data_len());
+
+    // 1) Pull off and decode the zero‐copy discriminator
+    let mut shard = {
+        let data = shard_ai.data.borrow();
+        let mut rdr: &[u8] = &data[8..];
+
+        BitShard::deserialize(&mut rdr).map_err(|_| ErrorCode::InvalidNullifierList)?
+    };
+
+    // 2) Prefix check (no Vecs)
+    for bit in 0..shard.prefix_len {
+        let byte = (bit / 8) as usize;
+        let shift = 7 - (bit % 8);
+        let p = (shard.prefix[byte] >> shift) & 1;
+        let n = (null_be[byte] >> shift) & 1;
+        require!(p == n, ErrorCode::InvalidNullifierBits);
+    }
+
+    // 3) Derive & check PDA
+    let (expected_pda, bump) =
+        derive_shard_pda_key(pool.identifier, &shard.prefix, shard.prefix_len);
+    require!(
+        &expected_pda == shard_ai.key,
+        ErrorCode::InvalidShardSelection
+    );
+
+    // 4) Insert or split
+    if shard.nullifiers.len() < SHARD_SIZE {
+        let pos = match shard.nullifiers.binary_search(&null_be) {
+            Ok(_) => return err!(ErrorCode::NullifierAlreadyUsed),
+            Err(p) => p,
+        };
+        shard.nullifiers.insert(pos, null_be);
+        shard.count += 1;
+
+        let info = shard_ai.to_account_info();
+        maybe_grow_shard_account(&info, &shard, &pool.to_account_info(), bump)?;
+        let mut d = shard_ai.data.borrow_mut();
+        let buf = shard
+            .try_to_vec()
+            .map_err(|_| ErrorCode::InvalidNullifierList)?;
+        d[8..8 + buf.len()].copy_from_slice(&buf);
+    } else {
+        msg!("splitting shard");
+        split_shard_and_insert(
+            shard_ai,
+            child0_ai,
+            child1_ai,
+            &null_be,
+            &pool.identifier,
+            user_ai,
+            system_program,
+            program_id,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn check_prefix(prefix: &[u8], null_be: &[u8; 32], len: u8) -> bool {
+    for i in 0..len {
+        let byte_idx = (i / 8) as usize;
+        let shift = 7 - (i % 8);
+        let pbit = (prefix[byte_idx] >> shift) & 1;
+        let nbit = (null_be[byte_idx] >> shift) & 1;
+        if pbit != nbit {
+            return false;
+        }
+    }
+    true
+}
 #[account]
 pub struct BitShard {
     /// how many bits of the nullifier we’ve consumed so far
     pub prefix_len: u8,
     /// those bits, left‐aligned in this 32‐byte array
     pub prefix: [u8; PREFIX_LENGTH],
+
+    pub count: u32,
     /// sorted list of nullifier hashes
     pub nullifiers: Vec<[u8; 32]>,
 }
-impl BitShard{
-    pub fn discriminator()->[u8;8]{
-        [0,0,0,0,0,0,0,1]
-    }
-}
+//For serialization purpose, manualy create the discriminator for the shard
+// impl BitShard {
+//     pub fn discriminator() -> [u8; 8] {
+//         [0, 0, 0, 0, 0, 0, 0, 1]
+//     }
+// }
 
 pub fn withdraw_variable_shard_nullifier(
     ctx: Context<WithdrawVariableShard>,
@@ -59,10 +529,10 @@ pub fn withdraw_variable_shard_nullifier(
     proof: [u8; 256],
     public_inputs: [u8; 136],
 ) -> Result<()> {
-    let pool = &mut ctx.accounts.pool;
     let public_inputs_slice = public_inputs.as_slice();
+    let sysvar = &ctx.accounts.instruction_account;
 
-    let (secret_be, null_be, root_be, maybe_new_leaf) = match mode {
+    let (secret_be, null_be, root_be, new_leaf) = match mode {
         0 => {
             //withdraw only
             let (val_be, null_be, root_be) = verify_withdraw_proof(&proof, public_inputs_slice)
@@ -71,13 +541,14 @@ pub fn withdraw_variable_shard_nullifier(
         }
         1 => {
             //Withdraw and add a leaf
-            let (val_be, null_be, new_leaf, root_be) =
-                verify_withdraw_and_deposit_proof(&proof, public_inputs_slice)
+            let (val_be, null_be, root_be, new_leaf) =
+                verify_withdraw_and_add_proof(&proof, public_inputs_slice)
                     .map_err(|_| ErrorCode::InvalidProof)?;
             (val_be, null_be, root_be, Some(new_leaf))
         }
         _ => return Err(ErrorCode::InvalidArgument.into()),
     };
+    
 
     let amount = u64::from_be_bytes(secret_be);
 
@@ -88,68 +559,98 @@ pub fn withdraw_variable_shard_nullifier(
         pool.compare_to_deep(root_be),
         ErrorCode::InvalidPublicInputRoot
     );
+    let shard = &mut ctx.accounts.nullifier_shard;
 
-    let shard_account = &ctx.accounts.nullifier_shard;
-    //We take the data from the shard account
+    process_one_nullifier(
+        &ctx.accounts.pool,
+        &shard.to_account_info(),
+        shard,
+        &ctx.accounts.dummy0_account,
+        &ctx.accounts.dummy1_account,
+        null_be,
+        &ctx.accounts.user.to_account_info(),
+        &ctx.accounts.system_program,
+        &id(),
+    )?;
 
-    // new: skip the 8-byte Anchor discriminator,
-    // then deserialize just the struct portion and ignore the trailing zeros.
-    // 1) Deserialize in its own scope so the Ref is dropped immediately
-    let mut nullifier_shard = {
-        let data = shard_account.data.borrow();
-        let mut rdr: &[u8] = &data[8..];
-        msg!("Length of data: {}", rdr.len());
-        BitShard::deserialize(&mut rdr).map_err(|_| ErrorCode::InvalidNullifierList)?
-    };
-    let prefix = nullifier_shard.prefix.as_slice();
-    let prefix_length = nullifier_shard.prefix_len;
-    let prefix_bits = get_prefix_bits(prefix, prefix_length as usize);
-    let nullifier_prefix_bits = get_prefix_bits(null_be.as_slice(), prefix_length as usize);
+    //Add to the batch
+    if mode == 1 {
+        let idx = pool.find_first_match() as usize;
+        let pool = &mut ctx.accounts.pool;
+        pool.batch_leaves[idx] = new_leaf.unwrap();
+        pool.merkle_root_batch = get_root(&pool.batch_leaves);
 
-    require!(
-        nullifier_prefix_bits == prefix_bits,
-        ErrorCode::InvalidNullifierBits
-    );
+        // a) first sub‐batch boundary?
+        if idx + 1 == SUB_BATCH_SIZE {
+            let expected_idxr = Pubkey::find_program_address(
+                &[b"leaves_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
 
-    let shard_key = derive_shard_pda_key(pool.identifier, &prefix_bits, prefix_length);
-    require!(
-        &shard_key.0 == shard_account.key,
-        ErrorCode::InvalidShardSelection
-    );
+            let indexer_account_key = ctx.remaining_accounts[0].key;
 
-    //Add code for progressive account resizing
-    if nullifier_shard.nullifiers.len() < SHARD_SIZE {
-        // find insert position
-        let pos = match nullifier_shard.nullifiers.binary_search(&null_be) {
-            Ok(_) => return err!(ErrorCode::NullifierAlreadyUsed),
-            Err(p) => p,
-        };
+            require!(
+                expected_idxr == *indexer_account_key,
+                ErrorCode::InvalidIndexerAccount
+            );
 
-        // insert into the Vec
-        nullifier_shard.nullifiers.insert(pos, null_be);
+            enforce_sub_batch_memo(
+                &sysvar,
+                pool.batch_number,
+                &pool.batch_leaves[..SUB_BATCH_SIZE],
+            )?;
+        }
+        // b) second boundary → rollover
+        else if idx + 1 == LEAVES_LENGTH {
+            let expected_idxr = Pubkey::find_program_address(
+                &[b"leaves_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+            let indexer_account_key = ctx.remaining_accounts[0].key;
 
-        // grow account if needed
-        let shard_ai = ctx.accounts.nullifier_shard.to_account_info();
-        maybe_grow_shard_account(&shard_ai, &nullifier_shard, &ctx.accounts.pool.to_account_info(), shard_key.1)?;
+            require!(
+                expected_idxr == *indexer_account_key,
+                ErrorCode::InvalidIndexerAccount
+            );
+            enforce_sub_batch_memo(
+                &sysvar,
+                pool.batch_number,
+                &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+            )?;
 
-        // serialize back into account
-        nullifier_shard
-            .serialize(&mut &mut shard_ai.data.borrow_mut()[..])
-            .map_err(|_| ErrorCode::InvalidNullifierList)?;
-    } else {
-        let child0_ai = &ctx.accounts.dummy0_account;
-        let child1_ai = &ctx.accounts.dummy1_account;
-        // full → split & insert new
-        split_shard_and_insert(
-            &ctx.accounts.nullifier_shard,
-            /* shard0_ai: */ &child0_ai,
-            /* shard1_ai: */ &child1_ai,
-            &null_be,
-            &pool.identifier,
-            &ctx.accounts.user,
-            &ctx.accounts.system_program,
-            ctx.program_id,
-        )?;
+            // rollover:
+            let batch_root = pool.merkle_root_batch;
+            pool.update_peaks(batch_root);
+            pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+            pool.whole_tree_root = pool.compute_root_from_peaks();
+        }
+        // c) small‐tree boundary? Post the subtree root of the previuous subtree when first depositing
+        else if pool.batch_number % BATCHES_PER_SMALL_TREE == 0 && idx == 0 {
+            let expected_st_idxr = Pubkey::find_program_address(
+                &[b"subtree_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+            let expected_indexer = Pubkey::find_program_address(
+                &[b"leaves_indexer", &pool.identifier],
+                ctx.program_id,
+            )
+            .0;
+            let (indexer_account_key, subtree_indxr) =
+                (ctx.remaining_accounts[0].key, ctx.remaining_accounts[1].key);
+
+            require!(
+                expected_indexer == *indexer_account_key,
+                ErrorCode::InvalidIndexerAccount
+            );
+            require!(
+                expected_st_idxr == *subtree_indxr,
+                ErrorCode::InvalidIndexerAccount
+            );
+            enforce_small_tree_memo(&sysvar, pool.batch_number - 1, pool.last_small_tree_root)?;
+        }
     }
 
     let net_amount = amount.checked_sub(POOL_FEE).unwrap();
@@ -172,10 +673,8 @@ pub fn withdraw_variable_shard_nullifier(
         POOL_FEE,
         net_amount
     );
-
     Ok(())
 }
-
 
 pub fn get_prefix_bits(data: &[u8], n: usize) -> Vec<u8> {
     let out_len = (n + 7) / 8;
@@ -204,36 +703,33 @@ pub fn derive_shard_pda_key(pool_id: [u8; 16], prefix_bits: &[u8], prefix_len: u
     )
 }
 
-
 //This will be useful when the shard accounts need to grow, not useful at the moment
 pub fn maybe_grow_shard_account<'info>(
-    shard_ai: &AccountInfo<'info>,   // the shard PDA
-    shard:    &BitShard,             // in‐memory struct
-    pool_ai:  &AccountInfo<'info>,   // the pool PDA
-    pool_bump: u8,                   // you need the pool bump to sign
+    shard_ai: &AccountInfo<'info>, // the shard PDA
+    shard: &BitShard,              // in‐memory struct
+    pool_ai: &AccountInfo<'info>,  // the pool PDA
+    pool_bump: u8,                 // you need the pool bump to sign
 ) -> Result<()> {
     // figure out serialized size…
-    let data     = shard.try_to_vec().map_err(|_| ErrorCode::InvalidNullifierList)?;
-    let new_len  = 8 + data.len();       
-    let info     = shard_ai.clone();
+    let data = shard
+        .try_to_vec()
+        .map_err(|_| ErrorCode::InvalidNullifierList)?;
+    let new_len = 8 + data.len();
+    let info = shard_ai.clone();
 
     if new_len > info.data_len() {
         // re‐alloc the shard account buffer
         info.realloc(new_len, false)?;
 
         // compute how much extra rent we need
-        let rent     = Rent::get()?;
+        let rent = Rent::get()?;
         let required = rent.minimum_balance(new_len);
-        let current  = info.lamports();
-        let delta    = required.saturating_sub(current);
+        let current = info.lamports();
+        let delta = required.saturating_sub(current);
 
         if delta > 0 {
             // build a system transfer from pool PDA → shard PDA
-            let ix = system_instruction::transfer(
-                &pool_ai.key(),
-                &info.key(),
-                delta,
-            );
+            let ix = system_instruction::transfer(&pool_ai.key(), &info.key(), delta);
             // sign with the pool PDA’s seeds
             invoke_signed(
                 &ix,
@@ -252,8 +748,6 @@ pub fn maybe_grow_shard_account<'info>(
     }
     Ok(())
 }
-
-
 
 pub fn split_shard_and_insert<'info>(
     old_ai: &AccountInfo<'info>,
@@ -280,15 +774,17 @@ pub fn split_shard_and_insert<'info>(
     let new_len = shard.prefix_len.checked_add(1).unwrap() as usize;
 
     // 3) prepare Borsh‐buffers
-    let mut bs0 = BitShard {
+    let bs0 = BitShard {
         prefix_len: shard.prefix_len + 1,
         prefix: shard.prefix,
         nullifiers: lower.to_vec(),
+        count: half as u32,
     };
     let mut bs1 = BitShard {
         prefix_len: shard.prefix_len + 1,
         prefix: shard.prefix,
         nullifiers: upper.to_vec(),
+        count: half as u32,
     };
     // set the new bit in bs1.prefix
     {
@@ -298,7 +794,7 @@ pub fn split_shard_and_insert<'info>(
     }
 
     // 4) create / realloc child0
-    let space = 8 + 1 + 8 + 4 + 32 * SHARD_SIZE;
+    let space = 8 + 1 + 8 + 4 + 32 * SHARD_SIZE / 2;
     let lam = Rent::get()?.minimum_balance(space);
     let (pda0, bump0) = derive_shard_pda_key(
         *pool_id,
@@ -330,8 +826,8 @@ pub fn split_shard_and_insert<'info>(
         )?;
     }
     // serialize bs0 into child0
-    child0_ai.data.borrow_mut()[..8].copy_from_slice(&BitShard::discriminator());
-bs0.serialize(&mut &mut child0_ai.data.borrow_mut()[8..])?;
+    child0_ai.data.borrow_mut()[..8].copy_from_slice(&BitShard::DISCRIMINATOR);
+    bs0.serialize(&mut &mut child0_ai.data.borrow_mut()[8..])?;
     // bs0.serialize(&mut &mut child0_ai.data.borrow_mut()[..])?;
 
     // 5) create / realloc child1
@@ -365,12 +861,13 @@ bs0.serialize(&mut &mut child0_ai.data.borrow_mut()[8..])?;
             ]],
         )?;
     }
-    bs1.serialize(&mut &mut child1_ai.data.borrow_mut()[..])?;
+    // bs1.serialize(&mut &mut child1_ai.data.borrow_mut()[..])?;
+    child1_ai.data.borrow_mut()[..8].copy_from_slice(&BitShard::DISCRIMINATOR);
+    bs1.serialize(&mut &mut child1_ai.data.borrow_mut()[8..])?;
 
     // 6) insert into correct child
     let bit_byte = (new_nullifier[new_len / 8] >> (7 - (new_len % 8))) & 1;
     let target_ai = if bit_byte == 0 { child0_ai } else { child1_ai };
-    // let mut child: BitShard = BitShard::try_from_slice(&target_ai.data.borrow())?;
 
     let raw = target_ai.data.borrow();
     // skip any discriminator (none for raw create_account, but safe)
@@ -398,9 +895,10 @@ pub struct InitializeNullifierShards<'info> {
     )]
     pub pool: Account<'info, MerkleMountainRange>,
 
+    //init_if_needed to reiinit shards
     /// shard for bit=0 at prefix_len=1
     #[account(
-        init,
+        init_if_needed,
         payer = authority,
         space = SHARD_SPACE,
         seeds = [ b"nullifier_shard", pool.identifier.as_ref(), &[1_u8], &[0_u8] ],
@@ -410,7 +908,7 @@ pub struct InitializeNullifierShards<'info> {
 
     /// shard for bit=1 at prefix_len=1
     #[account(
-        init,
+        init_if_needed,
         payer = authority,
         space = SHARD_SPACE,
         seeds = [ b"nullifier_shard", pool.identifier.as_ref(), &[1_u8], &[1_u8] ],
@@ -430,6 +928,7 @@ pub fn initialize_nullifier_shards(ctx: Context<InitializeNullifierShards>) -> R
     s0.prefix_len = 1;
     s0.prefix = [0u8; PREFIX_LENGTH]; // all bits zero
     s0.nullifiers = Vec::new();
+    s0.count = 0;
 
     // shard1: prefix_len=1, prefix bit=1
     let s1 = &mut ctx.accounts.shard1;
@@ -438,39 +937,45 @@ pub fn initialize_nullifier_shards(ctx: Context<InitializeNullifierShards>) -> R
     p1[0] = 0b1000_0000; // set the high bit
     s1.prefix = p1;
     s1.nullifiers = Vec::new();
+    s1.count = 0;
 
     Ok(())
 }
 
+#[derive(Accounts)]
+pub struct ResetNullifierShards<'info> {
+    #[account(
+        mut,
+        seeds = [ b"variable_pool", pool.identifier.as_ref() ],
+        bump
+    )]
+    pub pool: Account<'info, MerkleMountainRange>,
 
-// pub fn maybe_grow_shard_account<'info>(
-//     shard_ai: &AccountInfo<'info>,
-//     shard: &BitShard,
-//     authority: &Signer<'info>,
-// ) -> Result<()> {
-//     // 1) serialize shard to bytes
-//     let data = shard
-//         .try_to_vec()
-//         .map_err(|_| ErrorCode::InvalidNullifierList)?;
-//     let new_len = 8  // Anchor discriminator
-//                 + data.len();
+    /// these must already exist and have the correct discriminator
+    #[account(mut)]
+    pub shard0: Account<'info, BitShard>,
+    #[account(mut)]
+    pub shard1: Account<'info, BitShard>,
 
-//     // 2) if we need more space, realloc
-//     let info = shard_ai.clone();
-//     if new_len > info.data_len() {
-//         // grow, no zero‐copy here so gap is zeroed
-//         info.realloc(new_len, false)?;
-//         // we assume the authority has signed and can pay (caller ensures this)
-//     }
-//     let rent = Rent::get()?;
-//     let required = rent.minimum_balance(new_len);
-//     let current = shard_ai.lamports();
-//     if current < required {
-//         let delta = required - current;
-//         invoke(
-//             &system_instruction::transfer(&payer.key(), &shard_ai.key(), delta),
-//             &[payer.clone(), shard_ai.clone(), system_program.clone()],
-//         )?;
-//     }
-//     Ok(())
-// }
+    pub authority: Signer<'info>,
+}
+
+pub fn reset_nullifier_shards(ctx: Context<ResetNullifierShards>) -> Result<()> {
+    // zero out shard0
+    let s0 = &mut ctx.accounts.shard0;
+    s0.prefix_len = 1;
+    s0.prefix = [0u8; PREFIX_LENGTH];
+    s0.count = 0;
+    s0.nullifiers.clear();
+
+    // zero out shard1
+    let s1 = &mut ctx.accounts.shard1;
+    s1.prefix_len = 1;
+    let mut p1 = [0u8; PREFIX_LENGTH];
+    p1[0] = 0b1000_0000;
+    s1.prefix = p1;
+    s1.count = 0;
+    s1.nullifiers.clear();
+
+    Ok(())
+}

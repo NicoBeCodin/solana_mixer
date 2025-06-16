@@ -2,6 +2,7 @@ use crate::error::ErrorCode;
 use crate::verifying_key::*;
 use crate::{DEFAULT_LEAF, LEAVES_LENGTH};
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::Instruction;
 use anchor_lang::solana_program::sysvar::instructions;
 use ark_ff::{FromBytes, ToBytes};
 use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
@@ -13,15 +14,10 @@ type G1 = ark_bn254::G1Affine;
 use base64::{engine::general_purpose, Engine as _};
 pub type LeavesArray = [[u8; 32]; 16];
 
-
-
-
-
 pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
     let mut nodes = leaves.to_vec();
-    
-       
-     msg!("Calculating root");
+
+    msg!("Calculating root");
     // Ensure the number of leaves is a power of two
     if (nodes.len() & (nodes.len() - 1)) != 0 {
         panic!("Number of leaves must be a power of two");
@@ -42,7 +38,7 @@ pub fn get_root(leaves: &LeavesArray) -> [u8; 32] {
     }
     nodes[0]
 }
-   
+
 fn change_endianness(bytes: &[u8]) -> Vec<u8> {
     let mut vec = Vec::new();
     for b in bytes.chunks(32) {
@@ -170,75 +166,54 @@ pub const DEPTH_TWENTY: [u8; 32] = [
 ];
 
 pub const DEPTH_TWENTY_ONE: [u8; 32] = [
-    25, 223, 144, 236, 132, 78, 188, 79,
-    254, 235, 216, 102, 243,  56,  89, 176,
-    192,  81, 216, 201,  88, 238,  58, 168,
-    143, 143, 141, 243, 219, 145, 165, 177,
+    25, 223, 144, 236, 132, 78, 188, 79, 254, 235, 216, 102, 243, 56, 89, 176, 192, 81, 216, 201,
+    88, 238, 58, 168, 143, 143, 141, 243, 219, 145, 165, 177,
 ];
 
 pub const DEPTH_TWENTY_TWO: [u8; 32] = [
-    24, 204, 162, 166, 107,  92,   7, 135,
-    152,  30, 105, 174, 253, 132, 133,  45,
-    116, 175,  14, 147, 239,  73,  18, 180,
-    100, 140,   5, 247,  34, 239, 229,  43,
+    24, 204, 162, 166, 107, 92, 7, 135, 152, 30, 105, 174, 253, 132, 133, 45, 116, 175, 14, 147,
+    239, 73, 18, 180, 100, 140, 5, 247, 34, 239, 229, 43,
 ];
 
 pub const DEPTH_TWENTY_THREE: [u8; 32] = [
-    35, 136, 144, 148,  21,  35,  13,  27,
-     77,  19,   4, 210, 213,  79,  71,  58,
-     98, 131,  56, 242, 239, 173, 131, 250,
-    223,   5, 100,  69,  73, 210,  83, 141,
+    35, 136, 144, 148, 21, 35, 13, 27, 77, 19, 4, 210, 213, 79, 71, 58, 98, 131, 56, 242, 239, 173,
+    131, 250, 223, 5, 100, 69, 73, 210, 83, 141,
 ];
 
 pub const DEPTH_TWENTY_FOUR: [u8; 32] = [
-    39,  23,  31, 180, 169, 123, 108, 192,
-    233, 232, 245,  67, 181,  41,  77, 232,
-    102, 162, 175,  44, 156, 141,  11,  29,
-    150, 230, 115, 228,  82, 158, 213,  64,
+    39, 23, 31, 180, 169, 123, 108, 192, 233, 232, 245, 67, 181, 41, 77, 232, 102, 162, 175, 44,
+    156, 141, 11, 29, 150, 230, 115, 228, 82, 158, 213, 64,
 ];
 
 pub const DEPTH_TWENTY_FIVE: [u8; 32] = [
-    47, 246, 101,   5,  64, 246,  41, 253,
-     87,  17, 160, 188, 116, 252,  13,  40,
-    220, 178,  48, 185,  57,  37, 131, 229,
-    248, 213, 150, 150, 221, 230, 174,  33,
+    47, 246, 101, 5, 64, 246, 41, 253, 87, 17, 160, 188, 116, 252, 13, 40, 220, 178, 48, 185, 57,
+    37, 131, 229, 248, 213, 150, 150, 221, 230, 174, 33,
 ];
 
 pub const DEPTH_TWENTY_SIX: [u8; 32] = [
-    18,  12,  88, 241,  67, 212, 145, 233,
-     89,   2, 247, 245,  39, 119, 120, 162,
-    224, 173,  81, 104, 246, 173, 215,  86,
-    105, 147,  38,  48, 206,  97,  21,  24,
+    18, 12, 88, 241, 67, 212, 145, 233, 89, 2, 247, 245, 39, 119, 120, 162, 224, 173, 81, 104, 246,
+    173, 215, 86, 105, 147, 38, 48, 206, 97, 21, 24,
 ];
 
 pub const DEPTH_TWENTY_SEVEN: [u8; 32] = [
-    31,  33, 254, 183,  13,  63,  33, 176,
-    123, 248,  83, 213, 229, 219,   3,   7,
-     30, 196, 149, 160, 165, 101, 162,  29,
-    162, 214, 101, 210, 121,  72,  55, 149,
+    31, 33, 254, 183, 13, 63, 33, 176, 123, 248, 83, 213, 229, 219, 3, 7, 30, 196, 149, 160, 165,
+    101, 162, 29, 162, 214, 101, 210, 121, 72, 55, 149,
 ];
 
 pub const DEPTH_TWENTY_EIGHT: [u8; 32] = [
-    36, 190, 144,  95, 167,  19,  53, 225,
-     76,  99, 140, 192, 246, 106, 134,  35,
-    168,  38, 231, 104,   6, 138, 158, 150,
-    139, 177, 161, 221, 225, 138, 114, 210,
+    36, 190, 144, 95, 167, 19, 53, 225, 76, 99, 140, 192, 246, 106, 134, 35, 168, 38, 231, 104, 6,
+    138, 158, 150, 139, 177, 161, 221, 225, 138, 114, 210,
 ];
 
 pub const DEPTH_TWENTY_NINE: [u8; 32] = [
-    15, 134, 102, 182,  46, 209, 116, 145,
-    197,  12, 234, 222, 173,  87, 212, 205,
-     89, 126, 243, 130,  29, 101, 195,  40,
-    116,  76, 116, 229,  83, 218, 194, 109,
+    15, 134, 102, 182, 46, 209, 116, 145, 197, 12, 234, 222, 173, 87, 212, 205, 89, 126, 243, 130,
+    29, 101, 195, 40, 116, 76, 116, 229, 83, 218, 194, 109,
 ];
 
 pub const DEPTH_THIRTY: [u8; 32] = [
-     9,  24, 212, 107, 245,  45, 152, 176,
-     52,  65,  63,  74,  26,  28,  65,  89,
-     78, 122, 122,  63, 106, 224, 140, 180,
-     61,  26,  42,  35,  14,  25,  89, 239,
+    9, 24, 212, 107, 245, 45, 152, 176, 52, 65, 63, 74, 26, 28, 65, 89, 78, 122, 122, 63, 106, 224,
+    140, 180, 61, 26, 42, 35, 14, 25, 89, 239,
 ];
-
 
 /// lookup table for 1..=20, fall back for others
 pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
@@ -263,16 +238,16 @@ pub fn get_default_root_depth(depth: usize) -> [u8; 32] {
         18 => DEPTH_EIGHTEEN,
         19 => DEPTH_NINETEEN,
         20 => DEPTH_TWENTY,
-        21=>DEPTH_TWENTY_ONE,
-        22=>DEPTH_TWENTY_TWO, 
-        23=>DEPTH_TWENTY_THREE, 
-        24=>DEPTH_TWENTY_FOUR,
-        25=>DEPTH_TWENTY_FIVE, 
-        26=>DEPTH_TWENTY_SIX, 
-        27=>DEPTH_TWENTY_SEVEN, 
-        28=>DEPTH_TWENTY_EIGHT, 
-        29=>DEPTH_TWENTY_NINE, 
-        30=>DEPTH_THIRTY,
+        21 => DEPTH_TWENTY_ONE,
+        22 => DEPTH_TWENTY_TWO,
+        23 => DEPTH_TWENTY_THREE,
+        24 => DEPTH_TWENTY_FOUR,
+        25 => DEPTH_TWENTY_FIVE,
+        26 => DEPTH_TWENTY_SIX,
+        27 => DEPTH_TWENTY_SEVEN,
+        28 => DEPTH_TWENTY_EIGHT,
+        29 => DEPTH_TWENTY_NINE,
+        30 => DEPTH_THIRTY,
         _ => root_depth(depth),
     }
 }
@@ -315,9 +290,7 @@ pub fn verify_deposit_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
 ) -> Result<([u8; 8], [u8; 32], [u8; 32])> {
-    
-    
-    if public_inputs.len() != 72{
+    if public_inputs.len() != 72 {
         msg!("Invalid public inputs length: {}", public_inputs.len());
         return Err(ErrorCode::InvalidArgument.into());
     }
@@ -368,7 +341,6 @@ pub fn verify_single_deposit_proof(
 
     let inputs_arr: &[[u8; 32]; 2] = &[secret_be, leaf1];
     let _ = proof_verification(proof, &VERIFYINGKEY_DEPOSIT1, inputs_arr);
-
 
     msg!("Proof single leaf deposit proof succesfully verified");
 
@@ -421,7 +393,6 @@ pub fn verify_one_null_two_leaves(
 
     let _ = proof_verification(proof, &COMBINE1TO2_VERIFYINGKEY, inputs_arr);
 
-
     msg!("Combine proof successfully verified");
 
     // Return the four public outputs
@@ -469,59 +440,53 @@ pub fn verify_withdraw_proof(
     //     .try_into()
     //     .expect("Failed conversion");
 
-    
     // allocate a 32-byte buffer, zero-initialized
     let mut val_be = [0u8; 32];
     // copy your 8 bytes into the *right* end of the 32-byte buffer
     let null: [u8; 32] = public_inputs[0..32].try_into().expect("Failed");
-    let asset_id :[u8; 32]= public_inputs[32..64].try_into().expect("Failed");
+    let asset_id: [u8; 32] = public_inputs[32..64].try_into().expect("Failed");
     let val_be8: [u8; 8] = public_inputs[64..72].try_into().expect("Failed");
     val_be[32 - 8..].copy_from_slice(&val_be8);
     let root: [u8; 32] = public_inputs[72..104].try_into().expect("Failed");
-    
+
     //For SOL this must be 0.
     for i in asset_id {
-        if i !=0 {
+        if i != 0 {
             return Err(ErrorCode::InvalidAssetId.into());
         }
     }
 
     let inputs_arr: &[[u8; 32]; 4] = &[val_be, asset_id, null, root];
 
-
     let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
 
     Ok((val_be8, null, root))
 }
 
-pub fn verify_withdraw_and_deposit_proof(
+pub fn verify_withdraw_and_add_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
 ) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
-    // let secret_be: [u8; 32] = Fr::from(8u64)
-    //     .0
-    //     .to_bytes_be()
-    //     .try_into()
-    //     .expect("Failed conversion");
-
-    // allocate a 32-byte buffer, zero-initialized
     let mut val_be = [0u8; 32];
-    let val_be8: [u8; 8] = public_inputs[64..72].try_into().expect("Failed");
+    let val_be8: [u8; 8] = public_inputs[96..104].try_into().expect("Failed");
     // copy your 8 bytes into the *right* end of the 32-byte buffer
     val_be[32 - 8..].copy_from_slice(&val_be8);
     let null: [u8; 32] = public_inputs[0..32].try_into().expect("Failed");
     let asset_id: [u8; 32] = public_inputs[32..64].try_into().expect("Failed");
-    let new_leaf = public_inputs[72..104].try_into().expect("Failed");
-    let root: [u8; 32] = public_inputs[104..136].try_into().expect("Failed");
-    let inputs_arr: &[[u8; 32]; 5] = &[val_be,asset_id, null, new_leaf, root];
+    let root = public_inputs[64..96].try_into().expect("Failed");
+    let new_leaf: [u8; 32] = public_inputs[104..136].try_into().expect("Failed");
+    let inputs_arr: &[[u8; 32]; 5] = &[val_be, asset_id, null, new_leaf, root];
     //For SOL this must be 0.
     for i in asset_id {
-        if i !=0 {
+        if i != 0 {
             return Err(ErrorCode::InvalidAssetId.into());
         }
     }
+    msg!(" asset_id, val_be8, null, root, new_leaf {:?}\n, {:?}\n, {:?}\n, {:?}\n, {:?}\n", asset_id, val_be8, null, root, new_leaf);
+    msg!("inpust arr: {:?}", inputs_arr);
     let _ = proof_verification(proof, &WITHDRAW_AND_ADD_VERIFYINGKEY, inputs_arr);
-    Ok((val_be8, null, new_leaf, root))
+    msg!("Verification for withdraw and add leaf succeded");
+    Ok((val_be8, null, root, new_leaf))
 }
 
 pub fn verify_withdraw_on_behalf(
@@ -577,43 +542,54 @@ fn proof_verification<const N: usize>(
 }
 
 /// Checks that the subbatch memo is correct, essential for easy parsing
- pub fn enforce_sub_batch_memo(
- sysvar_account: &AccountInfo,
- batch_number: u64,
- expected_leaves: &[[u8; 32]]
- )-> Result<()> {
- // Load the first instruction (must be Memo)
- let memo_ix = instructions::load_instruction_at_checked(1, sysvar_account)?;
- 
- msg!("memo_ix: {:?}", memo_ix.program_id);
- 
- require!(
-     memo_ix.program_id == MEMO_PROGRAM_ID,
-     ErrorCode::MissingMemoInstruction
- );
+pub fn enforce_sub_batch_memo(
+    sysvar_account: &AccountInfo,
+    batch_number: u64,
+    expected_leaves: &[[u8; 32]],
+) -> Result<()> {
+    // Load the first instruction (must be Memo)
+    let mut found = false;
 
- // Decode base64 payload
- let memo_str = std::str::from_utf8(&memo_ix.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
- msg!("Translating from utf8 {}", memo_str);
- let memo_bytes = general_purpose::STANDARD
-     .decode(memo_str)
-     .map_err(|_| ErrorCode::InvalidMemoBase64)?;
- msg!("Getting memo bytes {:?}", memo_bytes);
+    let memo_ix: Option<Instruction> = None;
+    for i in 0..=2 {
+        if let Ok(memo_ix) = instructions::load_instruction_at_checked(i, sysvar_account) {
+            msg!(
+                "Checking instruction at index {}: {:?}",
+                i,
+                memo_ix.program_id
+            );
+            if memo_ix.program_id == MEMO_PROGRAM_ID {
+                found = true;
 
- // Check batch number (big-endian u64)
- let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
- require!(
-     user_batch == batch_number,
-     ErrorCode::InvalidUserBatchNumber
- );
+                msg!("Found memo instruction at index {}", i);
+                break;
+            }
+        }
+    }
+    let memo = memo_ix.unwrap();
+    require!(found, ErrorCode::MissingMemoInstruction);
+    // Decode base64 payload
+    let memo_str = std::str::from_utf8(&memo.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;
+    msg!("Translating from utf8 {}", memo_str);
+    let memo_bytes = general_purpose::STANDARD
+        .decode(memo_str)
+        .map_err(|_| ErrorCode::InvalidMemoBase64)?;
+    msg!("Getting memo bytes {:?}", memo_bytes);
 
- // Verify each leaf
- for (i, leaf) in expected_leaves.iter().enumerate() {
-     let start = 8 + i * 32;
-     let slice: [u8; 32] = memo_bytes[start..start + 32].try_into().unwrap();
-     require!(&slice == leaf, ErrorCode::InvalidUserLeaves);
- }
- Ok(())
+    // Check batch number (big-endian u64)
+    let user_batch = u64::from_be_bytes(memo_bytes[0..8].try_into().unwrap());
+    require!(
+        user_batch == batch_number,
+        ErrorCode::InvalidUserBatchNumber
+    );
+
+    // Verify each leaf
+    for (i, leaf) in expected_leaves.iter().enumerate() {
+        let start = 8 + i * 32;
+        let slice: [u8; 32] = memo_bytes[start..start + 32].try_into().unwrap();
+        require!(&slice == leaf, ErrorCode::InvalidUserLeaves);
+    }
+    Ok(())
 }
 
 ///  Memo format:   batch_number_be(8) || small_tree_root(32)
@@ -662,16 +638,13 @@ pub fn enforce_nullifier_shard_memo(
         ErrorCode::MissingMemoInstruction
     );
     // 3) Memo data is base64‐encoded; decode it
-    let s = std::str::from_utf8(&memo_ix.data)
-        .map_err(|_| error!(ErrorCode::InvalidMemoUtf8))?;
+    let s = std::str::from_utf8(&memo_ix.data).map_err(|_| error!(ErrorCode::InvalidMemoUtf8))?;
     let memo_bytes = general_purpose::STANDARD
         .decode(s)
         .map_err(|_| error!(ErrorCode::InvalidMemoBase64))?;
     // 4) For each expected 32-byte initial, ensure it appears somewhere
     for init in expected_initials.iter() {
-        let found = memo_bytes
-            .windows(32)
-            .any(|window| window == init);
+        let found = memo_bytes.windows(32).any(|window| window == init);
         require!(found, ErrorCode::InvalidNullifierShardMemo);
     }
     Ok(())

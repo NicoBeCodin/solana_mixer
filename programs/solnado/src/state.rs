@@ -2,7 +2,6 @@ use anchor_lang::{prelude::*, solana_program::log::sol_log_compute_units};
 use crate::{ utils::next_power_of_two_batch, DEFAULT_LEAF, SMALL_TREE_BATCH_DEPTH, TARGET_DEPTH_LARGE, TARGET_DEPTH_LARGE_ARRAY, MIN_PDA_SIZE };
 use solana_poseidon::{ Parameters, hashv, Endianness };
 use crate::utils::get_default_root_depth;
-use crate::error::ErrorCode;
 pub const SHARD_SIZE: usize = 8;
 
 #[derive(Accounts)]
@@ -284,9 +283,9 @@ pub struct MerkleMountainRange{
     pub number_of_peaks: u8, //Max number of peaks is 
     pub max_leaves: u64, //MAX number of leaves in a pool
     //Creator is optional
-    pub creator: Pubkey,
-    //Creator fee is optional
-    pub creator_fee: u64,
+    // pub creator: Pubkey,
+    // //Creator fee is optional
+    // pub creator_fee: u64,
     //I'll add fields for the nullifier manager
     
 }
@@ -449,10 +448,8 @@ impl MerkleMountainRange {
 
     pub fn compare_to_deep(&self, user_root: [u8;32])->bool{
         let current_depth = next_power_of_two_batch(self.batch_number as usize);
-        msg!("Before root deepening");
-        sol_log_compute_units();
         let deep_root= self.deepen(current_depth, TARGET_DEPTH_LARGE);
-        sol_log_compute_units();
+
     
         if !(user_root==deep_root){
             msg!("user root: {:?} \n deep_root: {:?}", user_root, deep_root);
