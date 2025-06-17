@@ -2,8 +2,10 @@ use crate::error::ErrorCode;
 use crate::id;
 use crate::utils::*;
 use crate::MerkleMountainRange;
+use crate::TARGET_DEPTH_LARGE;
 use crate::{BATCHES_PER_SMALL_TREE, LEAVES_LENGTH};
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::log::sol_log_compute_units;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::system_instruction;
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -83,17 +85,31 @@ pub fn combine_deposit_shard_single_nullifier<'info>(
     let pool = &ctx.accounts.pool;
     let sysvar = &ctx.accounts.instruction_account;
 
-    let deep_root = pool.get_deep_root();
-    let mut pi = public_inputs;
+    // let deep_root = pool.get_deep_root();
+    // let mut pi = public_inputs;
 
-    let offset = 96;
+    // let offset = 96;
 
-    // overwrite that slice with our on-chain root
-    pi[offset..offset + 32].copy_from_slice(&deep_root);
+    // // overwrite that slice with our on-chain root
+    // pi[offset..offset + 32].copy_from_slice(&deep_root);
 
     //Unpack the nullifier
     let (n, leaf1, leaf2, r) =
-        verify_one_null_two_leaves(&proof, &pi).map_err(|_| ErrorCode::InvalidProof)?;
+        verify_one_null_two_leaves(&proof, &public_inputs).map_err(|_| ErrorCode::InvalidProof)?;
+
+
+    let temp_batch = get_root(&pool.batch_leaves);
+    // sol_log_compute_units();
+    msg!("Temp batch root: {:?}", temp_batch);
+    let temp_root = pool.update_peaks_temp(temp_batch);
+    sol_log_compute_units();
+    msg!("Temp root: {:?}", temp_root);
+    sol_log_compute_units();
+    // 2) Check the root against our on‐chain deepened root
+    require!(
+        pool.deepen_temp(temp_root, TARGET_DEPTH_LARGE) == r,
+        ErrorCode::InvalidPublicInputRoot
+    );
 
     let shard = &mut ctx.accounts.nullifier_shard;
     //We take the data from the shard account
@@ -245,15 +261,31 @@ pub fn combine_deposit_shard_double_nullifier<'info>(
     let pool = &ctx.accounts.pool;
     let sysvar = &ctx.accounts.instruction_account;
 
-    let deep_root = pool.get_deep_root();
-    let mut pi = public_inputs;
-    let offset = 96;
-    // overwrite that slice with our on-chain root
-    pi[offset..offset + 32].copy_from_slice(&deep_root);
+    // let deep_root = pool.get_deep_root();
+    // let mut pi = public_inputs;
+    // let offset = 96;
+    // // overwrite that slice with our on-chain root
+    // pi[offset..offset + 32].copy_from_slice(&deep_root);
 
     // --- two nullifiers → one leaf (old behavior) ---
     let (n1, n2, leaf, r) =
-        verify_combine_proof(&proof, &pi).map_err(|_| ErrorCode::InvalidProof)?;
+        verify_combine_proof(&proof, &public_inputs).map_err(|_| ErrorCode::InvalidProof)?;
+
+
+    
+    let temp_batch = get_root(&pool.batch_leaves);
+    // sol_log_compute_units();
+    msg!("Temp batch root: {:?}", temp_batch);
+    let temp_root = pool.update_peaks_temp(temp_batch);
+    sol_log_compute_units();
+    msg!("Temp root: {:?}", temp_root);
+    sol_log_compute_units();
+    // 2) Check the root against our on‐chain deepened root
+    require!(
+        pool.deepen_temp(temp_root, TARGET_DEPTH_LARGE) == r,
+        ErrorCode::InvalidPublicInputRoot
+    );
+    
 
     let shard1 = &mut ctx.accounts.nullifier_shard1;
     process_one_nullifier(
@@ -516,12 +548,7 @@ pub struct BitShard {
     /// sorted list of nullifier hashes
     pub nullifiers: Vec<[u8; 32]>,
 }
-//For serialization purpose, manualy create the discriminator for the shard
-// impl BitShard {
-//     pub fn discriminator() -> [u8; 8] {
-//         [0, 0, 0, 0, 0, 0, 0, 1]
-//     }
-// }
+
 
 pub fn withdraw_variable_shard_nullifier(
     ctx: Context<WithdrawVariableShard>,
@@ -551,16 +578,25 @@ pub fn withdraw_variable_shard_nullifier(
     
 
     let amount = u64::from_be_bytes(secret_be);
-
+    msg!("Amount: {}", amount);
     let pool = &ctx.accounts.pool;
-
+    
+    // sol_log_compute_units();
+    // msg!("Temp batch: {:?}", &pool.batch_leaves);
+    let temp_batch = get_root(&pool.batch_leaves);
+    // sol_log_compute_units();
+    msg!("Temp batch root: {:?}", temp_batch);
+    let temp_root = pool.update_peaks_temp(temp_batch);
+    sol_log_compute_units();
+    msg!("Temp root: {:?}", temp_root);
+    sol_log_compute_units();
     // 2) Check the root against our on‐chain deepened root
     require!(
-        pool.compare_to_deep(root_be),
+        pool.deepen_temp(temp_root, TARGET_DEPTH_LARGE) == root_be,
         ErrorCode::InvalidPublicInputRoot
     );
     let shard = &mut ctx.accounts.nullifier_shard;
-
+    sol_log_compute_units();
     process_one_nullifier(
         &ctx.accounts.pool,
         &shard.to_account_info(),
