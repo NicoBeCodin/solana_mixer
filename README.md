@@ -1,64 +1,71 @@
-# Solana Mixer - On-Chain Logic
 
-In our original “fixed-amount” mixer, every deposit was exactly the same size and went straight into a single 256-leaf Merkle tree.  The user’s only secret was a nullifier and a fixed “note” value, and withdrawals simply proved membership of that one note.
+# LeafPay 
 
-With the new **Shielded Pool** design, we’ve generalized and improved that model:
+Welcome to the LeafPay App docs! Below you'll find:
 
-1. **Variable-Amount Notes**  
-   - **Before**: every leaf committed exactly 0.1 SOL (or whatever fixed size).  
-   - **Now**: each leaf carries its own private 64-bit value.  Two leaves can be deposited together—as long as their *sum* matches a third note you supply—so you can aggregate arbitrary amounts without revealing the individual addends on-chain.
-
-2. **“Combine” Proofs**  
-   - **Before**: deposits were independent, you could only withdraw one fixed note.  
-   - **Now**: you prove in zero-knowledge that  
-     \[ val₁ + val₂ = val₃ \]  
-     without revealing `val₁` or `val₂`.  On success, the two old notes are nullified (lock out double-spend via their nullifier-PDAs) and the new summed note is appended.
-
-3. **Multi-Stage Batching (Sub-Batch Memos)**  
-   - **Before**: every deposit tx included a full 16-leaf batch in a single Memo instruction (520 bytes).  
-   - **Now**: to avoid Solana’s “transaction too large” limit, we split each 16-leaf batch into two 8-leaf windows.  Whenever you cross an 8-leaf boundary (e.g. going from 7→9 or 15→17 leaves), the CLI auto-attaches *only* that 8-leaf window as a 264 byte memo.  The on-chain code then enforces byte-for-byte consistency of exactly those 8 leaves.
-
-4. **Deep-Padding Merkle Trees**  
-   - **Before**: tree depth was fixed at 8 (256 leaves).  
-   - **Now**: we keep a small “active” subtree (next power of two of current deposits) and then “deepen” it via successive default-leaf Poseidon hashes up to a larger target depth (e.g. 20) to form a fixed-depth tree without storing millions of zeros on-chain.
-
-5. **Enhanced CLI & Anchor APIs**  
-   - **Before**: simple `deposit()`, `withdraw()`.  
-   - **Now**: new endpoints for  
-     - `initialize_variable_pool`  
-     - `deposit_variable` (sum-proof + sub-batch memo)  
-     - `generate_combine_proof` / `send_combine_deposit_proof`  
-     - `generate_withdrawal_proof` / `send_withdrawal_proof`  
-   - All commands automate memo‐packing, proof generation, Merkle-proof routing, and high-compute budget injection.
+- On-chain Merkle Mountain Range architecture  
+- Leaf parsing via Base64 memos  
+- Transfering & withdrawing funds
+- Client-side SNARK‐proof offloading  
+- Roadmap: nullifier storage, multi-asset support, RPC endpoints  
 
 ---
 
-This new shielded-pool architecture preserves the core privacy guarantees of the original mixer (no link between deposit and withdrawal) while unlocking **variable amounts**, **on-chain note-combining**, and **scalable** tree depths—without blowing past Solana’s transaction‐size or compute limits.  
+## Merkle Tree Architecture
 
-## License
-This software is provided under the MIT License.
-However, commercial use of this software is strictly prohibited without explicit written permission from the author
+
+We maintain a **Merkle Mountain Range (MMR)** on‐chain, storing only *peaks* plus a 16‐leaf in‐flight buffer. Each batch is a 16‐leaf subtree (2⁴), whose root merges immediately into the MMR. By keeping only the current 16‐slot buffer **plus** peak array (`[depth, root]` pairs) on‐chain, all prove/deepen/roll‐up ops run in _O(log N)_ time without storing millions of leaves.  
+A leaf is a hash of 3 values:
+
+
+
+
+``` js
+hash(amount|nullifier|assetId)
+```
+
+This allows for ZK proofs that leaves being deposited or funds being transfered correspond to actual amounts that are locked in the pool.
+
+## Transfers & Withdrawals
+Transfers work by proving that you know the preimage to one (or two) of the leaves of the pool, that the amount written on the leaf you're adding to the tree is equal to the amount on the leaves you're using and nullifying and that the asset match. Transfering funds to another user implies giving him the amount, nullifier and asset on your leaf.  
+
+For withdrawal, given the correct computed proof, a third party relayer can withdraw securely towards a wallet of you're choosing to avoid having to fund an empty wallet. This wallet can then be used to interact with the program, allowing for complete unlinkeability between two users exchangings funds.
 
 ---
 
+## Efficient Leaf Parsing with Memos
 
-## TODO List
+At each sub‐batch (8 leaves) and full‐batch (16 leaves), we emit a **Base64 memo** via the Solana Memo program. Payload format:
 
-- Implement smart parsing with custom PDAs (max 10 calls)
-- Implement the other party withdrawal system for withdrawals
-- Allow for different combine deposit leaf patterns
-- Change the circom circuits to reject negative values
-- Implement the chacha signatures schemes
+```text
+batchNumber (8 bytes BE) ‖ leaf0 (32 bytes) ‖ … ‖ leafN (32 bytes)
+```
+
+Off‐chain indexers can call
+
+```js
+getSignaturesForAddress(LeavesIndexerPDA, …)
+```
+
+and replay memos to reconstruct up to 8 000 leaves in a single 1 000-signature fetch. On top of that a small tree indexer is used to check avoid parsing the whole tree and toget the siblings path. It is used every 10^16 transaction. These two methods combined make a finding the path for a leaf in a 1 billion leaves tree achievable with a maximum of 10 RPC calls, well under the 40 request/10sec of public endpoints.
+
+---
+## Nullifier storage
+
+Current nullifier storage mechanism is by progressively expanding a shard. Passed a certain point this shard is plit into two, where depending on the values of the nullifiers being stored it derives it's prefix. For example, all nullifiers with their first byte > 127 are stored in the shard with prefix 1, others in the shard with prefix 0. Once a threshold is hit for the first shard, we split depending on the value of the second byte. This way a user can deduce the shard he must add to his transaction by looking at the bytes in is nullifier. This allows for storing a nullifier at the low cost of 0.00022 SOL (about \$0.04 with SOL @$150).   
 
 
-- Integrate SPL tokens -> tried but causes too many dependency issues
+---
+
+## Client‐Side Offloading
 
 
-- Refactor the project, more streamlining
-- optimize CU usage
-- Optimize transaction instruction size
-  - When adding two leaves and a note, at least one of the leaves doesn't have to be in the memo and instruction
-  - u64 in the note is too much for a number
-  - the user puts the root that he wants to compare to this can be useful in the future
+All SNARK‐proof generation, public‐input packing, Merkle‐root recomputation, and memo parsing are generated by the client. The on‐chain program **only** verifies proofs and enforces correct memo‐PDA inclusion—everything else runs in the browser. This allows for further scaling without the need of central server to store the gigabytes of data, or a third party indexing service like  Light Protocol.
 
+---
 
+## Work in Progress & Next Steps
+* **Multi‐asset support:** Open deposits to SPL tokens, LSTs and NFTs in the same pool. The leaf format allows this but current anchor compatibility issues have halted the development of this feature.
+* **Inbox system** Allow a user depositing funds to add an encrypted message only decryptable by the recipient using chacha symetric encryption. This feature requires a wallet capable of trying multiple Chacha key generations which isn't supported currently by most Solana wallets.
+
+ * **Make a DAO** As a anonymity tool, the end goal is to make this community-owned and allow for a community of passionates to contribute to the future of encrypted DeFi.
