@@ -493,26 +493,32 @@ pub fn verify_withdraw_on_behalf(
     proof: &[u8; 256],
     public_inputs: &[u8],
 ) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
-    // let secret_be: [u8; 32] = Fr::from(8u64)
-    //     .0
-    //     .to_bytes_be()
-    //     .try_into()
-    //     .expect("Failed conversion");
+    // Validate input length: nullifier(32) + amount(8) + root(32) + withdrawer_pubkey(32) = 104 bytes
+    if public_inputs.len() != 104 {
+        msg!("Invalid public inputs length: {} (expected 104)", public_inputs.len());
+        return Err(ErrorCode::InvalidArgument.into());
+    }
 
-    let secret_be8: [u8; 8] = public_inputs[..8].try_into().expect("Failed");
-    // allocate a 32-byte buffer, zero-initialized
-    let mut secret_be = [0u8; 32];
+    // Extract components based on JavaScript packing: [nullifier||amount||root||withdrawer_pubkey]
+    let null: [u8; 32] = public_inputs[0..32].try_into().expect("Failed to extract nullifier");
+    let amount_be8: [u8; 8] = public_inputs[32..40].try_into().expect("Failed to extract amount");
+    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed to extract root");
+    let withdrawer_bytes: [u8; 32] = public_inputs[72..104].try_into().expect("Failed to extract withdrawer");
+
+    msg!("Amount bytes (8): {:?}", amount_be8);
+    let amount_u64 = u64::from_be_bytes(amount_be8);
+    msg!("Amount as u64: {}", amount_u64);
+
+    // Allocate a 32-byte buffer, zero-initialized for the amount
+    let mut amount_be = [0u8; 32];
     // copy your 8 bytes into the *right* end of the 32-byte buffer
-    secret_be[32 - 8..].copy_from_slice(&secret_be8);
-    let null: [u8; 32] = public_inputs[8..40].try_into().expect("Failed");
-    let withdrawer_bytes: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
-    let root: [u8; 32] = public_inputs[40..72].try_into().expect("Failed");
+    amount_be[32 - 8..].copy_from_slice(&amount_be8);
 
-    let inputs_arr: &[[u8; 32]; 4] = &[secret_be, null, withdrawer_bytes, root];
+    let inputs_arr: &[[u8; 32]; 4] = &[amount_be, null, withdrawer_bytes, root];
 
-    let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
+    let _ = proof_verification(proof, &WITHDRAW_ON_BEHALF_VK, inputs_arr);
 
-    Ok((secret_be8, null, withdrawer_bytes, root))
+    Ok((amount_be8, null, withdrawer_bytes, root))
 }
 
 fn proof_verification<const N: usize>(
@@ -550,7 +556,8 @@ pub fn enforce_sub_batch_memo(
     // Load the first instruction (must be Memo)
     let mut found = false;
 
-    let memo_ix: Option<Instruction> = None;
+    // let mut memo_ix: Option<Instruction> = None;
+    let mut memoix = None;
     for i in 0..=2 {
         if let Ok(memo_ix) = instructions::load_instruction_at_checked(i, sysvar_account) {
             msg!(
@@ -560,13 +567,13 @@ pub fn enforce_sub_batch_memo(
             );
             if memo_ix.program_id == MEMO_PROGRAM_ID {
                 found = true;
-
+                memoix = Some(memo_ix);
                 msg!("Found memo instruction at index {}", i);
                 break;
             }
         }
     }
-    let memo = memo_ix.unwrap();
+    let memo = memoix.unwrap();
     require!(found, ErrorCode::MissingMemoInstruction);
     // Decode base64 payload
     let memo_str = std::str::from_utf8(&memo.data).map_err(|_| ErrorCode::InvalidMemoUtf8)?;

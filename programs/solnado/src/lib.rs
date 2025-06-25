@@ -709,6 +709,14 @@ pub mod solnado {
     ) -> Result<()> {
         withdraw_variable_shard_nullifier(ctx, mode, proof, public_inputs)
     }
+
+    pub fn withdraw_on_behalf_shard(
+        ctx: Context<WithdrawOnBehalfShard>,
+        proof: [u8; 256],
+        public_inputs: [u8; 104], // nullifier(32)||amount(8)||root(32)||withdrawer_pubkey(32)
+    ) -> Result<()> {
+        withdraw_on_behalf_with_shard(ctx, proof, public_inputs)
+    }
 }
 //The following code is from the fixed deposit amount pool prototype, not useful anymore
 

@@ -108,5 +108,8 @@ pub enum ErrorCode {
     InvalidNullifierBits,
 
     #[msg("Invalid mode selection")]
-    InvalidMode,   
+    InvalidMode,
+
+    #[msg("Insufficient funds in pool for withdrawal")]
+    InsufficientFunds,
 }
