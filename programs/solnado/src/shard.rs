@@ -106,6 +106,25 @@ pub fn combine_deposit_shard_single_nullifier<'info>(
         ErrorCode::InvalidPublicInputRoot
     );
 
+        // Collect pool fee for nullifier processing (moved to end to avoid borrowing conflicts)
+        let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.user.key(),
+            &ctx.accounts.pool.key(),
+            POOL_FEE,
+        );
+        
+        anchor_lang::solana_program::program::invoke(
+            &transfer_ix,
+            &[
+                ctx.accounts.user.to_account_info(),
+                ctx.accounts.pool.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+        
+        msg!("Collected {} lamports as pool fee for nullifier processing", POOL_FEE);
+    
+
     let shard = &mut ctx.accounts.nullifier_shard;
     //We take the data from the shard account
     process_one_nullifier_ai(
@@ -203,23 +222,6 @@ pub fn combine_deposit_shard_single_nullifier<'info>(
         }
     }
 
-    // Collect pool fee for nullifier processing (moved to end to avoid borrowing conflicts)
-    let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
-        &ctx.accounts.user.key(),
-        &ctx.accounts.pool.key(),
-        POOL_FEE,
-    );
-    
-    anchor_lang::solana_program::program::invoke(
-        &transfer_ix,
-        &[
-            ctx.accounts.user.to_account_info(),
-            ctx.accounts.pool.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-        ],
-    )?;
-    
-    msg!("Collected {} lamports as pool fee for nullifier processing", POOL_FEE);
 
     Ok(())
 }

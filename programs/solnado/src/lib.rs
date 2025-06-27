@@ -333,350 +333,7 @@ pub mod solnado {
         Ok(())
     }
 
-    pub fn combine_deposit<'info>(
-        ctx: Context<CombineDeposit>,
-        mode: u8,
-        proof: [u8; 256],
-        public_inputs: [u8; 128],
-    ) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-        let sysvar = &ctx.accounts.instruction_account;
-        let user_ai = ctx.accounts.user.to_account_info();
-        let sysprog = ctx.accounts.system_program.to_account_info();
-
-        let deep_root = pool.get_deep_root();
-        let mut pi = public_inputs;
-
-        // choose the right offset
-        let offset = match mode {
-            0 | 1 => 96, // both 0→1 and 1→2 proofs expect root at byte-index 96
-            2 => 128,    // 2→2 proof expects root at byte-index 128
-            _ => return Err(ErrorCode::InvalidArgument.into()),
-        };
-
-        // overwrite that slice with our on-chain root
-        pi[offset..offset + 32].copy_from_slice(&deep_root);
-
-        //
-        // 1) Decode & verify, unpack nullifiers and new leaf( s ) + root
-        //
-        // (you’ll implement these three functions to match your circom)
-        let (nulls, new_leaves, root) = match mode {
-            0 => {
-                // --- two nullifiers → one leaf (old behavior) ---
-                let (n1, n2, leaf, r) = verify_combine_proof(&proof, &public_inputs)
-                    .map_err(|_| ErrorCode::InvalidProof)?;
-                (vec![n1, n2], vec![leaf], r)
-            }
-            1 => {
-                // --- one nullifier → two leaves ---
-                // dummy placeholder: user to implement
-                let (n, leaf1, leaf2, r) = verify_one_null_two_leaves(&proof, &public_inputs)
-                    .map_err(|_| ErrorCode::InvalidProof)?;
-                (vec![n], vec![leaf1, leaf2], r)
-            }
-            2 => {
-                // --- two nullifiers → two leaves ---
-                // dummy placeholder: user to implement
-                let (n1, n2, leaf1, leaf2, r) = verify_two_null_two_leaves(&proof, &public_inputs)
-                    .map_err(|_| ErrorCode::InvalidProof)?;
-                (vec![n1, n2], vec![leaf1, leaf2], r)
-            }
-            _ => return Err(ErrorCode::InvalidArgument.into()),
-        };
-
-        for (i, n) in nulls.iter().enumerate() {
-            let (expected, bump) = Pubkey::find_program_address(&[n], ctx.program_id);
-            // let acct = *ctx.remaining_accounts[i].key;
-            let acct_info = match i {
-                0 => ctx.accounts.nullifier1.to_account_info(),
-                _ => ctx.accounts.nullifier2_or_else.to_account_info(),
-            };
-
-            require!(
-                expected == acct_info.key(),
-                ErrorCode::InvalidNullifierAccount
-            );
-            require!(acct_info.lamports() == 0, ErrorCode::NullifierAlreadyUsed);
-
-            invoke_signed(
-                &system_instruction::create_account(
-                    &user_ai.key(),
-                    &expected,
-                    Rent::get()?.minimum_balance(MIN_PDA_SIZE),
-                    MIN_PDA_SIZE as u64,
-                    ctx.program_id,
-                ),
-                &[user_ai.clone(), acct_info, sysprog.clone()],
-                &[&[n.as_ref(), &[bump]]],
-            )?;
-        }
-
-        let mut idx = pool.find_first_match() as usize;
-        let acct_index: usize = match mode {
-            0 | 2 => 1,
-            _ => 0,
-        };
-
-        require!(idx < LEAVES_LENGTH, ErrorCode::InvalidIndexing);
-
-        for leaf in new_leaves {
-            pool.batch_leaves[idx] = leaf;
-            pool.merkle_root_batch = get_root(&pool.batch_leaves);
-
-            // a) first sub‐batch boundary?
-            if idx + 1 == SUB_BATCH_SIZE {
-                let expected_idxr = Pubkey::find_program_address(
-                    &[b"leaves_indexer", &pool.identifier],
-                    ctx.program_id,
-                )
-                .0;
-                let indxr_acct_key = match acct_index {
-                    0 => ctx.accounts.nullifier2_or_else.key,
-                    _ => ctx.remaining_accounts[0].key,
-                };
-
-                require!(
-                    expected_idxr == *indxr_acct_key,
-                    ErrorCode::InvalidIndexerAccount
-                );
-
-                enforce_sub_batch_memo(
-                    &sysvar,
-                    pool.batch_number,
-                    &pool.batch_leaves[..SUB_BATCH_SIZE],
-                )?;
-            }
-            // b) second boundary → rollover
-            else if idx + 1 == LEAVES_LENGTH {
-                let expected_idxr = Pubkey::find_program_address(
-                    &[b"leaves_indexer", &pool.identifier],
-                    ctx.program_id,
-                )
-                .0;
-                let indxr_acct_key = match acct_index {
-                    0 => ctx.accounts.nullifier2_or_else.key,
-                    _ => ctx.remaining_accounts[0].key,
-                };
-
-                require!(
-                    expected_idxr == *indxr_acct_key,
-                    ErrorCode::InvalidIndexerAccount
-                );
-                enforce_sub_batch_memo(
-                    &sysvar,
-                    pool.batch_number,
-                    &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
-                )?;
-
-                // rollover:
-                let batch_root = pool.merkle_root_batch;
-                pool.update_peaks(batch_root);
-                pool.batch_number = pool.batch_number.checked_add(1).unwrap();
-                pool.whole_tree_root = pool.compute_root_from_peaks();
-            }
-            // c) small‐tree boundary? Post the subtree root of the previuous subtree when first depositing
-            else if pool.batch_number % BATCHES_PER_SMALL_TREE == 0 && idx == 0 {
-                let expected_st_idxr = Pubkey::find_program_address(
-                    &[b"subtree_indexer", &pool.identifier],
-                    ctx.program_id,
-                )
-                .0;
-                let expected_idxr = Pubkey::find_program_address(
-                    &[b"leaves_indexer", &pool.identifier],
-                    ctx.program_id,
-                )
-                .0;
-                let (indxr_acct_key, subtree_indxr) = match acct_index {
-                    0 => (
-                        ctx.accounts.nullifier2_or_else.key,
-                        ctx.remaining_accounts[0].key,
-                    ),
-                    _ => (ctx.remaining_accounts[1].key, ctx.remaining_accounts[2].key),
-                };
-                require!(
-                    expected_idxr == *indxr_acct_key,
-                    ErrorCode::InvalidIndexerAccount
-                );
-                require!(
-                    expected_st_idxr == *subtree_indxr,
-                    ErrorCode::InvalidIndexerAccount
-                );
-                enforce_small_tree_memo(&sysvar, pool.batch_number - 1, pool.last_small_tree_root)?;
-            }
-            idx += 1;
-        }
-        Ok(())
-    }
-
-    pub fn withdraw_on_behalf(
-        ctx: Context<WithdrawOnBehalf>,
-        proof: [u8; 256],
-        public_inputs: Vec<u8>, // nullifier||amount||root||withdrawer_pubkey
-    ) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-
-        //
-        // 1) Decode & verify, unpack secret_be, null_be, root_be, withdrawer_bytes
-        //
-        let (secret_be, null_be, withdrawer_bytes, root_be) =
-            verify_withdraw_on_behalf(&proof, public_inputs.as_slice())
-                .map_err(|_| ErrorCode::InvalidProof)?;
-
-        // reconstruct withdrawer pubkey and check it matches the passed-in account
-        let withdrawer_key = ctx.accounts.withdrawer.key.to_bytes();
-
-        let expected_withdrawer = pubkey!(&withdrawer_bytes);
-        require!(
-            withdrawer_key == withdrawer_bytes,
-            ErrorCode::InvalidWithdrawerKey
-        );
-
-        // also ensure the withdrawer is not the same as the fee‐payer
-        require!(
-            expected_withdrawer != &ctx.accounts.payer.key().to_bytes(),
-            ErrorCode::InvalidArgument
-        );
-
-        // 2) Check the Merkle root
-        require!(
-            pool.compare_to_deep(root_be),
-            ErrorCode::InvalidPublicInputRoot
-        );
-
-        // 3) Compute amount and rent
-        let amount = u64::from_be_bytes(secret_be);
-        let rent = Rent::get()?;
-        let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
-        let net_amount = amount
-            .checked_sub(rent_lamports + ON_BEHALF_FEE)
-            .ok_or(ErrorCode::InvalidArgument)?;
-
-        // 4) Nullifier PDA must match and be unused
-        let (null_pda, bump) = Pubkey::find_program_address(&[&null_be], ctx.program_id);
-        require!(
-            null_pda == *ctx.accounts.nullifier_account.key,
-            ErrorCode::InvalidNullifierAccount
-        );
-        require!(
-            ctx.accounts.nullifier_account.lamports() == 0,
-            ErrorCode::NullifierAlreadyUsed
-        );
-
-        // 5) Create the nullifier account (size=0) to mark it used
-        let create_ix = system_instruction::create_account(
-            &ctx.accounts.payer.key(),
-            &null_pda,
-            rent_lamports,
-            MIN_PDA_SIZE as u64,
-            ctx.program_id,
-        );
-        invoke_signed(
-            &create_ix,
-            &[
-                ctx.accounts.payer.to_account_info(),
-                ctx.accounts.nullifier_account.clone(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[&[&null_be, &[bump]]],
-        )?;
-
-        // 6) Move lamports: pool → withdrawer + payer + nullifier
-        **pool.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += net_amount;
-        **ctx.accounts.payer.try_borrow_mut_lamports()? += ON_BEHALF_FEE;
-        **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
-
-        Ok(())
-    }
-
-    pub fn withdraw_variable(
-        ctx: Context<WithdrawVariable>,
-        mode: u8,
-        proof: [u8; 256],
-        public_inputs: [u8; 136],
-    ) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-        let public_inputs_slice = public_inputs.as_slice();
-
-        let (secret_be, null_be, root_be, maybe_new_leaf) = match mode {
-            0 => {
-                //withdraw only
-                let (val_be, null_be, root_be) = verify_withdraw_proof(&proof, public_inputs_slice)
-                    .map_err(|_| ErrorCode::InvalidProof)?;
-                (val_be, null_be, root_be, None)
-            }
-            1 => {
-                //Withdraw and add a leaf
-                let (val_be, null_be, new_leaf, root_be) =
-                    verify_withdraw_and_add_proof(&proof, public_inputs_slice)
-                        .map_err(|_| ErrorCode::InvalidProof)?;
-                (val_be, null_be, root_be, Some(new_leaf))
-            }
-            _ => return Err(ErrorCode::InvalidArgument.into()),
-        };
-
-        // // 1) Verify ZK proof, unpack [ secret_be, nullifier_hash_be, root_be ]
-        // let (secret_be, nullifier_hash_be, root_be) =
-        //     verify_withdraw_proof(&proof, secret, nullifier_hash, public_root).map_err(|_| ErrorCode::InvalidProof)?;
-        // // the “secret” is really the amount in BE bytes
-        // let amount = u64::from_be_bytes(secret_be[24..32].try_into().unwrap());
-        let amount = u64::from_be_bytes(secret_be);
-
-        // 2) Check the root against our on‐chain deepened root
-        require!(
-            pool.compare_to_deep(root_be),
-            ErrorCode::InvalidPublicInputRoot
-        );
-
-        // 3) Derive & check the nullifier PDA is unused
-        let (null_pda, bump) = Pubkey::find_program_address(&[&null_be], ctx.program_id);
-        require!(
-            null_pda == *ctx.accounts.nullifier_account.key,
-            ErrorCode::InvalidNullifierAccount
-        );
-
-        require!(
-            ctx.accounts.nullifier_account.lamports() == 0,
-            ErrorCode::NullifierAlreadyUsed
-        );
-
-        // 4) Compute rent & net withdrawal
-        let rent = Rent::get()?;
-        let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
-        let net_amount = amount.checked_sub(rent_lamports).unwrap();
-        msg!("Rent to store nullifier PDA: {}", rent_lamports);
-
-        //Nullifier PDA is in the anchor constraints
-
-        msg!("Nullifier PDA created; {} lamports reserved", rent_lamports);
-
-        // 6) Move lamports from pool → user + nullifier PDA
-        //    (Because `pool` is declared with `seeds`/`bump`, Anchor will
-        //     automatically pass its PDA seeds so it can sign this CPI.)
-        **ctx
-            .accounts
-            .pool
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
-        **ctx
-            .accounts
-            .user
-            .to_account_info()
-            .try_borrow_mut_lamports()? += net_amount;
-
-        msg!(
-            "Withdrew {} total; {} for nullifier PDA, {} net to user",
-            amount,
-            rent_lamports,
-            net_amount
-        );
-
-        Ok(())
-    }
-
-    pub fn initialize_shards(ctx: Context<InitializeNullifierShards>) -> Result<()> {
+        pub fn initialize_shards(ctx: Context<InitializeNullifierShards>) -> Result<()> {
         initialize_nullifier_shards(ctx)
     }
 
@@ -717,6 +374,351 @@ pub mod solnado {
     ) -> Result<()> {
         withdraw_on_behalf_with_shard(ctx, proof, public_inputs)
     }
+
+    // pub fn combine_deposit<'info>(
+    //     ctx: Context<CombineDeposit>,
+    //     mode: u8,
+    //     proof: [u8; 256],
+    //     public_inputs: [u8; 128],
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+    //     let sysvar = &ctx.accounts.instruction_account;
+    //     let user_ai = ctx.accounts.user.to_account_info();
+    //     let sysprog = ctx.accounts.system_program.to_account_info();
+
+    //     let deep_root = pool.get_deep_root();
+    //     let mut pi = public_inputs;
+
+    //     // choose the right offset
+    //     let offset = match mode {
+    //         0 | 1 => 96, // both 0→1 and 1→2 proofs expect root at byte-index 96
+    //         2 => 128,    // 2→2 proof expects root at byte-index 128
+    //         _ => return Err(ErrorCode::InvalidArgument.into()),
+    //     };
+
+    //     // overwrite that slice with our on-chain root
+    //     pi[offset..offset + 32].copy_from_slice(&deep_root);
+
+    //     //
+    //     // 1) Decode & verify, unpack nullifiers and new leaf( s ) + root
+    //     //
+    //     // (you’ll implement these three functions to match your circom)
+    //     let (nulls, new_leaves, root) = match mode {
+    //         0 => {
+    //             // --- two nullifiers → one leaf (old behavior) ---
+    //             let (n1, n2, leaf, r) = verify_combine_proof(&proof, &public_inputs)
+    //                 .map_err(|_| ErrorCode::InvalidProof)?;
+    //             (vec![n1, n2], vec![leaf], r)
+    //         }
+    //         1 => {
+    //             // --- one nullifier → two leaves ---
+    //             // dummy placeholder: user to implement
+    //             let (n, leaf1, leaf2, r) = verify_one_null_two_leaves(&proof, &public_inputs)
+    //                 .map_err(|_| ErrorCode::InvalidProof)?;
+    //             (vec![n], vec![leaf1, leaf2], r)
+    //         }
+    //         2 => {
+    //             // --- two nullifiers → two leaves ---
+    //             // dummy placeholder: user to implement
+    //             let (n1, n2, leaf1, leaf2, r) = verify_two_null_two_leaves(&proof, &public_inputs)
+    //                 .map_err(|_| ErrorCode::InvalidProof)?;
+    //             (vec![n1, n2], vec![leaf1, leaf2], r)
+    //         }
+    //         _ => return Err(ErrorCode::InvalidArgument.into()),
+    //     };
+
+    //     for (i, n) in nulls.iter().enumerate() {
+    //         let (expected, bump) = Pubkey::find_program_address(&[n], ctx.program_id);
+    //         // let acct = *ctx.remaining_accounts[i].key;
+    //         let acct_info = match i {
+    //             0 => ctx.accounts.nullifier1.to_account_info(),
+    //             _ => ctx.accounts.nullifier2_or_else.to_account_info(),
+    //         };
+
+    //         require!(
+    //             expected == acct_info.key(),
+    //             ErrorCode::InvalidNullifierAccount
+    //         );
+    //         require!(acct_info.lamports() == 0, ErrorCode::NullifierAlreadyUsed);
+
+    //         invoke_signed(
+    //             &system_instruction::create_account(
+    //                 &user_ai.key(),
+    //                 &expected,
+    //                 Rent::get()?.minimum_balance(MIN_PDA_SIZE),
+    //                 MIN_PDA_SIZE as u64,
+    //                 ctx.program_id,
+    //             ),
+    //             &[user_ai.clone(), acct_info, sysprog.clone()],
+    //             &[&[n.as_ref(), &[bump]]],
+    //         )?;
+    //     }
+
+    //     let mut idx = pool.find_first_match() as usize;
+    //     let acct_index: usize = match mode {
+    //         0 | 2 => 1,
+    //         _ => 0,
+    //     };
+
+    //     require!(idx < LEAVES_LENGTH, ErrorCode::InvalidIndexing);
+
+    //     for leaf in new_leaves {
+    //         pool.batch_leaves[idx] = leaf;
+    //         pool.merkle_root_batch = get_root(&pool.batch_leaves);
+
+    //         // a) first sub‐batch boundary?
+    //         if idx + 1 == SUB_BATCH_SIZE {
+    //             let expected_idxr = Pubkey::find_program_address(
+    //                 &[b"leaves_indexer", &pool.identifier],
+    //                 ctx.program_id,
+    //             )
+    //             .0;
+    //             let indxr_acct_key = match acct_index {
+    //                 0 => ctx.accounts.nullifier2_or_else.key,
+    //                 _ => ctx.remaining_accounts[0].key,
+    //             };
+
+    //             require!(
+    //                 expected_idxr == *indxr_acct_key,
+    //                 ErrorCode::InvalidIndexerAccount
+    //             );
+
+    //             enforce_sub_batch_memo(
+    //                 &sysvar,
+    //                 pool.batch_number,
+    //                 &pool.batch_leaves[..SUB_BATCH_SIZE],
+    //             )?;
+    //         }
+    //         // b) second boundary → rollover
+    //         else if idx + 1 == LEAVES_LENGTH {
+    //             let expected_idxr = Pubkey::find_program_address(
+    //                 &[b"leaves_indexer", &pool.identifier],
+    //                 ctx.program_id,
+    //             )
+    //             .0;
+    //             let indxr_acct_key = match acct_index {
+    //                 0 => ctx.accounts.nullifier2_or_else.key,
+    //                 _ => ctx.remaining_accounts[0].key,
+    //             };
+
+    //             require!(
+    //                 expected_idxr == *indxr_acct_key,
+    //                 ErrorCode::InvalidIndexerAccount
+    //             );
+    //             enforce_sub_batch_memo(
+    //                 &sysvar,
+    //                 pool.batch_number,
+    //                 &pool.batch_leaves[SUB_BATCH_SIZE..LEAVES_LENGTH],
+    //             )?;
+
+    //             // rollover:
+    //             let batch_root = pool.merkle_root_batch;
+    //             pool.update_peaks(batch_root);
+    //             pool.batch_number = pool.batch_number.checked_add(1).unwrap();
+    //             pool.whole_tree_root = pool.compute_root_from_peaks();
+    //         }
+    //         // c) small‐tree boundary? Post the subtree root of the previuous subtree when first depositing
+    //         else if pool.batch_number % BATCHES_PER_SMALL_TREE == 0 && idx == 0 {
+    //             let expected_st_idxr = Pubkey::find_program_address(
+    //                 &[b"subtree_indexer", &pool.identifier],
+    //                 ctx.program_id,
+    //             )
+    //             .0;
+    //             let expected_idxr = Pubkey::find_program_address(
+    //                 &[b"leaves_indexer", &pool.identifier],
+    //                 ctx.program_id,
+    //             )
+    //             .0;
+    //             let (indxr_acct_key, subtree_indxr) = match acct_index {
+    //                 0 => (
+    //                     ctx.accounts.nullifier2_or_else.key,
+    //                     ctx.remaining_accounts[0].key,
+    //                 ),
+    //                 _ => (ctx.remaining_accounts[1].key, ctx.remaining_accounts[2].key),
+    //             };
+    //             require!(
+    //                 expected_idxr == *indxr_acct_key,
+    //                 ErrorCode::InvalidIndexerAccount
+    //             );
+    //             require!(
+    //                 expected_st_idxr == *subtree_indxr,
+    //                 ErrorCode::InvalidIndexerAccount
+    //             );
+    //             enforce_small_tree_memo(&sysvar, pool.batch_number - 1, pool.last_small_tree_root)?;
+    //         }
+    //         idx += 1;
+    //     }
+    //     Ok(())
+    // }
+
+    // pub fn withdraw_on_behalf(
+    //     ctx: Context<WithdrawOnBehalf>,
+    //     proof: [u8; 256],
+    //     public_inputs: Vec<u8>, // nullifier||amount||root||withdrawer_pubkey
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+
+    //     //
+    //     // 1) Decode & verify, unpack secret_be, null_be, root_be, withdrawer_bytes
+    //     //
+    //     let (secret_be, null_be, withdrawer_bytes, root_be) =
+    //         verify_withdraw_on_behalf(&proof, public_inputs.as_slice())
+    //             .map_err(|_| ErrorCode::InvalidProof)?;
+
+    //     // reconstruct withdrawer pubkey and check it matches the passed-in account
+    //     let withdrawer_key = ctx.accounts.withdrawer.key.to_bytes();
+
+    //     let expected_withdrawer = pubkey!(&withdrawer_bytes);
+    //     require!(
+    //         withdrawer_key == withdrawer_bytes,
+    //         ErrorCode::InvalidWithdrawerKey
+    //     );
+
+    //     // also ensure the withdrawer is not the same as the fee‐payer
+    //     require!(
+    //         expected_withdrawer != &ctx.accounts.payer.key().to_bytes(),
+    //         ErrorCode::InvalidArgument
+    //     );
+
+    //     // 2) Check the Merkle root
+    //     require!(
+    //         pool.compare_to_deep(root_be),
+    //         ErrorCode::InvalidPublicInputRoot
+    //     );
+
+    //     // 3) Compute amount and rent
+    //     let amount = u64::from_be_bytes(secret_be);
+    //     let rent = Rent::get()?;
+    //     let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
+    //     let net_amount = amount
+    //         .checked_sub(rent_lamports + ON_BEHALF_FEE)
+    //         .ok_or(ErrorCode::InvalidArgument)?;
+
+    //     // 4) Nullifier PDA must match and be unused
+    //     let (null_pda, bump) = Pubkey::find_program_address(&[&null_be], ctx.program_id);
+    //     require!(
+    //         null_pda == *ctx.accounts.nullifier_account.key,
+    //         ErrorCode::InvalidNullifierAccount
+    //     );
+    //     require!(
+    //         ctx.accounts.nullifier_account.lamports() == 0,
+    //         ErrorCode::NullifierAlreadyUsed
+    //     );
+
+    //     // 5) Create the nullifier account (size=0) to mark it used
+    //     let create_ix = system_instruction::create_account(
+    //         &ctx.accounts.payer.key(),
+    //         &null_pda,
+    //         rent_lamports,
+    //         MIN_PDA_SIZE as u64,
+    //         ctx.program_id,
+    //     );
+    //     invoke_signed(
+    //         &create_ix,
+    //         &[
+    //             ctx.accounts.payer.to_account_info(),
+    //             ctx.accounts.nullifier_account.clone(),
+    //             ctx.accounts.system_program.to_account_info(),
+    //         ],
+    //         &[&[&null_be, &[bump]]],
+    //     )?;
+
+    //     // 6) Move lamports: pool → withdrawer + payer + nullifier
+    //     **pool.to_account_info().try_borrow_mut_lamports()? -= amount;
+    //     **ctx.accounts.withdrawer.try_borrow_mut_lamports()? += net_amount;
+    //     **ctx.accounts.payer.try_borrow_mut_lamports()? += ON_BEHALF_FEE;
+    //     **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
+
+    //     Ok(())
+    // }
+
+    // pub fn withdraw_variable(
+    //     ctx: Context<WithdrawVariable>,
+    //     mode: u8,
+    //     proof: [u8; 256],
+    //     public_inputs: [u8; 136],
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+    //     let public_inputs_slice = public_inputs.as_slice();
+
+    //     let (secret_be, null_be, root_be, maybe_new_leaf) = match mode {
+    //         0 => {
+    //             //withdraw only
+    //             let (val_be, null_be, root_be) = verify_withdraw_proof(&proof, public_inputs_slice)
+    //                 .map_err(|_| ErrorCode::InvalidProof)?;
+    //             (val_be, null_be, root_be, None)
+    //         }
+    //         1 => {
+    //             //Withdraw and add a leaf
+    //             let (val_be, null_be, new_leaf, root_be) =
+    //                 verify_withdraw_and_add_proof(&proof, public_inputs_slice)
+    //                     .map_err(|_| ErrorCode::InvalidProof)?;
+    //             (val_be, null_be, root_be, Some(new_leaf))
+    //         }
+    //         _ => return Err(ErrorCode::InvalidArgument.into()),
+    //     };
+
+    //     // // 1) Verify ZK proof, unpack [ secret_be, nullifier_hash_be, root_be ]
+    //     // let (secret_be, nullifier_hash_be, root_be) =
+    //     //     verify_withdraw_proof(&proof, secret, nullifier_hash, public_root).map_err(|_| ErrorCode::InvalidProof)?;
+    //     // // the “secret” is really the amount in BE bytes
+    //     // let amount = u64::from_be_bytes(secret_be[24..32].try_into().unwrap());
+    //     let amount = u64::from_be_bytes(secret_be);
+
+    //     // 2) Check the root against our on‐chain deepened root
+    //     require!(
+    //         pool.compare_to_deep(root_be),
+    //         ErrorCode::InvalidPublicInputRoot
+    //     );
+
+    //     // 3) Derive & check the nullifier PDA is unused
+    //     let (null_pda, bump) = Pubkey::find_program_address(&[&null_be], ctx.program_id);
+    //     require!(
+    //         null_pda == *ctx.accounts.nullifier_account.key,
+    //         ErrorCode::InvalidNullifierAccount
+    //     );
+
+    //     require!(
+    //         ctx.accounts.nullifier_account.lamports() == 0,
+    //         ErrorCode::NullifierAlreadyUsed
+    //     );
+
+    //     // 4) Compute rent & net withdrawal
+    //     let rent = Rent::get()?;
+    //     let rent_lamports = rent.minimum_balance(MIN_PDA_SIZE);
+    //     let net_amount = amount.checked_sub(rent_lamports).unwrap();
+    //     msg!("Rent to store nullifier PDA: {}", rent_lamports);
+
+    //     //Nullifier PDA is in the anchor constraints
+
+    //     msg!("Nullifier PDA created; {} lamports reserved", rent_lamports);
+
+    //     // 6) Move lamports from pool → user + nullifier PDA
+    //     //    (Because `pool` is declared with `seeds`/`bump`, Anchor will
+    //     //     automatically pass its PDA seeds so it can sign this CPI.)
+    //     **ctx
+    //         .accounts
+    //         .pool
+    //         .to_account_info()
+    //         .try_borrow_mut_lamports()? -= amount;
+    //     **ctx.accounts.nullifier_account.try_borrow_mut_lamports()? += rent_lamports;
+    //     **ctx
+    //         .accounts
+    //         .user
+    //         .to_account_info()
+    //         .try_borrow_mut_lamports()? += net_amount;
+
+    //     msg!(
+    //         "Withdrew {} total; {} for nullifier PDA, {} net to user",
+    //         amount,
+    //         rent_lamports,
+    //         net_amount
+    //     );
+
+    //     Ok(())
+    // }
+
+
 }
 //The following code is from the fixed deposit amount pool prototype, not useful anymore
 
