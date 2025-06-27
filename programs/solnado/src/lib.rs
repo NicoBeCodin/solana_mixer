@@ -22,10 +22,7 @@ pub const DEFAULT_LEAF_HASH: [u8; 32] = [
     226, 180, 148, 10, 58, 237, 36, 17, 203, 101, 225, 28,
 ];
 const MIN_PDA_SIZE: usize = 1;
-const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
-const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; // 10_000_000 Low for testing purposes
-const PROGRAM_FEE: u64 = 1_000_000; //0.001 SOL FEE PER WITHDRAWAL
-const TARGET_DEPTH: usize = 20;
+
 
 declare_id!("2xJgeatVVK3u3SNf4pyXuLuc2UrzEQBprPds2qfJSuEt");
 const TARGET_DEPTH_LARGE_ARRAY: usize = 26;
@@ -33,9 +30,12 @@ const TARGET_DEPTH_LARGE: usize = 30;
 const BATCHES_PER_SMALL_TREE: u64 = 4096; //Corresponds to 2^16 leaves --> about 9 rpc calls
 const SMALL_TREE_BATCH_DEPTH: usize = 16; //This 64 000 leaves
                                           // const ADMIN_KEY: Pubkey = pubkey!("EJZQiTeikeg8zgU7YgRfwZCxc9GdhTsYR3fQrXv3uK9V");
-const ADMIN_KEY: Pubkey = pubkey!("BSpEVXMrA3C1myPSUmT8hQSecrvJaUin8vnQTfzGGf17");
-const ON_BEHALF_FEE: u64 = 10_000;
-
+// const ADMIN_KEY: Pubkey = pubkey!("BSpEVXMrA3C1myPSUmT8hQSecrvJaUin8vnQTfzGGf17");
+// const ON_BEHALF_FEE: u64 = 10_000;
+// const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
+// const FIXED_DEPOSIT_AMOUNT: u64 = ((LAMPORTS_PER_SOL as f64) * 0.001) as u64; // 10_000_000 Low for testing purposes
+// const PROGRAM_FEE: u64 = 1_000_000; //0.001 SOL FEE PER WITHDRAWAL
+// const TARGET_DEPTH: usize = 20;
 //The subtreeIndexer when called should be called with the LeavesIndexer too
 //Updating the small batch root isn't important as long as we don't post the batch.
 
@@ -45,55 +45,7 @@ pub mod solnado {
     use super::*;
     use crate::error::ErrorCode;
 
-    pub fn initialize_pool(
-        ctx: Context<InitializePool>,
-        identifier: [u8; 16],
-        deposit_amount: u64,
-        creator_fee: u64,
-    ) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
 
-        pool.identifier = identifier;
-        let pool_string = std::str::from_utf8(&identifier)
-            .unwrap_or("Invalid utf_8")
-            .trim_end_matches(char::from(0));
-        pool.batch_leaves = default_leaves();
-        pool.merkle_root_batch = get_root(&pool.batch_leaves);
-        pool.batch_number = 0;
-        pool.depth = [0; TARGET_DEPTH_LARGE_ARRAY];
-        pool.number_of_peaks = 0;
-        pool.peaks = [DEFAULT_LEAF; TARGET_DEPTH_LARGE_ARRAY];
-        pool.max_leaves = (2_u64).pow((TARGET_DEPTH_LARGE) as u32); //Because batches
-        // pool.creator = ctx.accounts.authority.key();
-        //Creator fee should be capped
-        require!(
-            creator_fee <= deposit_amount.checked_div(10).unwrap(),
-            ErrorCode::CreatorFeeTooHigh
-        );
-        // pool.creator_fee = creator_fee;
-        // At least a 0.01 SOL DEPOSIT
-        require!(
-            deposit_amount >= 10_000_000,
-            ErrorCode::InvalidDepositAmount
-        );
-
-        pool.min_deposit_amount = deposit_amount;
-
-        msg!(
-            "Pool initialized by signer: {}\n
-        Pool name: {}\n
-        Deposit amount: {}\n
-        Creator_fee: {}\n",
-            ctx.accounts.authority.key(),
-            pool_string,
-            deposit_amount,
-            creator_fee
-        );
-
-        msg!("Pool initialized with {:?} as root", pool.merkle_root_batch);
-
-        Ok(())
-    }
 
     //maybe put the leaves indexer Pubkey in the struct to not have to derive the ekey everytime
     pub fn initialize_variable_pool(
@@ -373,8 +325,60 @@ pub mod solnado {
         public_inputs: [u8; 104], // nullifier(32)||amount(8)||root(32)||withdrawer_pubkey(32)
     ) -> Result<()> {
         withdraw_on_behalf_with_shard(ctx, proof, public_inputs)
+
     }
 
+
+        // pub fn initialize_pool(
+    //     ctx: Context<InitializePool>,
+    //     identifier: [u8; 16],
+    //     deposit_amount: u64,
+    //     creator_fee: u64,
+    // ) -> Result<()> {
+    //     let pool = &mut ctx.accounts.pool;
+
+    //     pool.identifier = identifier;
+    //     let pool_string = std::str::from_utf8(&identifier)
+    //         .unwrap_or("Invalid utf_8")
+    //         .trim_end_matches(char::from(0));
+    //     pool.batch_leaves = default_leaves();
+    //     pool.merkle_root_batch = get_root(&pool.batch_leaves);
+    //     pool.batch_number = 0;
+    //     pool.depth = [0; TARGET_DEPTH_LARGE_ARRAY];
+    //     pool.number_of_peaks = 0;
+    //     pool.peaks = [DEFAULT_LEAF; TARGET_DEPTH_LARGE_ARRAY];
+    //     pool.max_leaves = (2_u64).pow((TARGET_DEPTH_LARGE) as u32); //Because batches
+    //     // pool.creator = ctx.accounts.authority.key();
+    //     //Creator fee should be capped
+    //     require!(
+    //         creator_fee <= deposit_amount.checked_div(10).unwrap(),
+    //         ErrorCode::CreatorFeeTooHigh
+    //     );
+    //     // pool.creator_fee = creator_fee;
+    //     // At least a 0.01 SOL DEPOSIT
+    //     require!(
+    //         deposit_amount >= 10_000_000,
+    //         ErrorCode::InvalidDepositAmount
+    //     );
+
+    //     pool.min_deposit_amount = deposit_amount;
+
+    //     msg!(
+    //         "Pool initialized by signer: {}\n
+    //     Pool name: {}\n
+    //     Deposit amount: {}\n
+    //     Creator_fee: {}\n",
+    //         ctx.accounts.authority.key(),
+    //         pool_string,
+    //         deposit_amount,
+    //         creator_fee
+    //     );
+
+    //     msg!("Pool initialized with {:?} as root", pool.merkle_root_batch);
+
+    //     Ok(())
+    // }
+    
     // pub fn combine_deposit<'info>(
     //     ctx: Context<CombineDeposit>,
     //     mode: u8,
