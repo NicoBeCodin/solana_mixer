@@ -289,9 +289,11 @@ pub mod solnado {
         initialize_nullifier_shards(ctx)
     }
 
-    pub fn reset_shards(ctx: Context<ResetNullifierShards>) -> Result<()>{
-        reset_nullifier_shards(ctx)
-    }
+
+    //this is not needed as when deploying
+    // pub fn reset_shards(ctx: Context<ResetNullifierShards>) -> Result<()>{
+    //     reset_nullifier_shards(ctx)
+    // }
 
     pub fn combine_deposit_shard_single<'info>(
         ctx: Context<CombineDepositShardSingle>,

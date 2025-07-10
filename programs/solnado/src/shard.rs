@@ -12,7 +12,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 //The pool fee covers nullifier storage
 
 pub const SHARD_SIZE: usize = 8;
-pub const SHARD_SPLITTING_THRESHOLD : usize = 512;
+pub const SHARD_SPLITTING_THRESHOLD : usize = 300_000;
 pub const POOL_FEE: u64 = 300_000;
 pub const PREFIX_LENGTH: usize = 8;
 pub const ON_BEHALF_FEE: u64 = 50_000;
@@ -106,23 +106,23 @@ pub fn combine_deposit_shard_single_nullifier<'info>(
         ErrorCode::InvalidPublicInputRoot
     );
 
-        // Collect pool fee for nullifier processing (moved to end to avoid borrowing conflicts)
-        let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
-            &ctx.accounts.user.key(),
-            &ctx.accounts.pool.key(),
-            POOL_FEE,
-        );
-        
-        anchor_lang::solana_program::program::invoke(
-            &transfer_ix,
-            &[
-                ctx.accounts.user.to_account_info(),
-                ctx.accounts.pool.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-        )?;
-        
-        msg!("Collected {} lamports as pool fee for nullifier processing", POOL_FEE);
+    // Pool fee collection happens BEFORE shard processing
+    let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
+        &ctx.accounts.user.key(),
+        &ctx.accounts.pool.key(),
+        POOL_FEE,
+    );
+    
+    anchor_lang::solana_program::program::invoke(
+        &transfer_ix,
+        &[
+            ctx.accounts.user.to_account_info(),
+            ctx.accounts.pool.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+        ],
+    )?;
+    
+    msg!("Collected {} lamports as pool fee for nullifier processing", POOL_FEE);
     
 
     let shard = &mut ctx.accounts.nullifier_shard;
@@ -964,12 +964,9 @@ pub struct ResetNullifierShards<'info> {
 }
 
 pub fn reset_nullifier_shards(ctx: Context<ResetNullifierShards>) -> Result<()> {
-    // zero out shard0
+    // No authorization check!
     let s0 = &mut ctx.accounts.shard0;
-    s0.prefix_len = 1;
-    s0.prefix = [0u8; PREFIX_LENGTH];
-    s0.count = 0;
-    s0.nullifiers.clear();
+    s0.nullifiers.clear(); // Clears all nullifiers!
 
     // zero out shard1
     let s1 = &mut ctx.accounts.shard1;
@@ -1060,10 +1057,7 @@ pub fn withdraw_on_behalf_with_shard(
     // Validate that the amount is reasonable (not too large)
     const MAX_REASONABLE_AMOUNT: u64 = 1_000_000_000_000; // 1000 SOL in lamports
     msg!("Validating amount: {} <= {}", amount, MAX_REASONABLE_AMOUNT);
-    require!(
-        amount <= MAX_REASONABLE_AMOUNT,
-        ErrorCode::InvalidArgument
-    );
+    require!(amount <= MAX_REASONABLE_AMOUNT, ErrorCode::InvalidArgument);
     
     let pool_fee = POOL_FEE; // Pool fee for nullifier storage
     let on_behalf_fee = ON_BEHALF_FEE; // Fee for on-behalf withdrawal
