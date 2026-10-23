@@ -57,6 +57,7 @@ pub mod solnado {
         let pool = &mut ctx.accounts.pool;
 
         pool.identifier = identifier;
+        pool.version = 2;
         let pool_string = std::str::from_utf8(&identifier)
             .unwrap_or("Invalid utf_8")
             .trim_end_matches(char::from(0));
@@ -151,6 +152,7 @@ pub mod solnado {
         public_inputs: [u8; 72],
     ) -> Result<()> {
         let pool = &mut ctx.accounts.pool;
+        require!(pool.version == 2, ErrorCode::InvalidPoolAccount);
         let depositor = ctx.accounts.depositor.to_account_info();
         let pool_ai = pool.to_account_info();
         let sysvar_ai = &ctx.accounts.instruction_account;
@@ -286,7 +288,13 @@ pub mod solnado {
     }
 
         pub fn initialize_shards(ctx: Context<InitializeNullifierShards>) -> Result<()> {
+        require!(ctx.accounts.pool.version == 2, ErrorCode::InvalidPoolAccount);
         initialize_nullifier_shards(ctx)
+    }
+
+    pub fn split_shard(ctx: Context<SplitNullifierShard>) -> Result<()> {
+        require!(ctx.accounts.pool.version == 2, ErrorCode::InvalidPoolAccount);
+        split_nullifier_shard(ctx)
     }
 
 
@@ -316,7 +324,7 @@ pub mod solnado {
         ctx: Context<WithdrawVariableShard>,
         mode: u8,
         proof: [u8; 256],
-        public_inputs: [u8; 136],
+        public_inputs: [u8; 200],
     ) -> Result<()> {
         withdraw_variable_shard_nullifier(ctx, mode, proof, public_inputs)
     }
@@ -324,7 +332,7 @@ pub mod solnado {
     pub fn withdraw_on_behalf_shard(
         ctx: Context<WithdrawOnBehalfShard>,
         proof: [u8; 256],
-        public_inputs: [u8; 104], // nullifier(32)||amount(8)||root(32)||withdrawer_pubkey(32)
+        public_inputs: [u8; 136], // nullifier, amount, root, recipient, binding
     ) -> Result<()> {
         withdraw_on_behalf_with_shard(ctx, proof, public_inputs)
 

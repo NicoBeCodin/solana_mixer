@@ -272,6 +272,8 @@ pub struct MerkleMountainRange {
     pub depth: [u8; TARGET_DEPTH_LARGE_ARRAY],       //With each peak we associate a depth
     pub number_of_peaks: u8,                         //Max number of peaks is
     pub max_leaves: u64,                             //MAX number of leaves in a pool
+    /// Separates the proof-bound v2 nullifier namespace from spent v1 notes.
+    pub version: u8,
                                                      //Creator is optional
                                                      // pub creator: Pubkey,
                                                      // //Creator fee is optional

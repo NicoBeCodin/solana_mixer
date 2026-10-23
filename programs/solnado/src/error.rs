@@ -112,4 +112,7 @@ pub enum ErrorCode {
 
     #[msg("Insufficient funds in pool for withdrawal")]
     InsufficientFunds,
+
+    #[msg("Nullifier shard is full; split it before spending")]
+    ShardNeedsSplit,
 }

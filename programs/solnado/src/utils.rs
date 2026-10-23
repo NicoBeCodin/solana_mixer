@@ -267,7 +267,7 @@ pub fn verify_withdraw_fixed_proof(proof: &[u8; 256], public_inputs: &[u8]) -> R
         .expect("Failed public_input_nullifier parsing");
 
     let public_inputs_array: &[[u8; 32]; 2] = &[public_input_nullifier, public_input_root];
-    let _ = proof_verification(proof, &VERIFYINGKEY, public_inputs_array);
+    proof_verification(proof, &VERIFYINGKEY, public_inputs_array)?;
 
     // let vk: Groth16Verifyingkey = VERIFYINGKEY;
     // let proof_a: G1 =
@@ -311,7 +311,7 @@ pub fn verify_deposit_proof(
 
     let inputs_arr: &[[u8; 32]; 3] = &[secret_be, leaf1, leaf2];
 
-    let _ = proof_verification(proof, &VERIFYINGKEY_DEPOSIT2, inputs_arr);
+    proof_verification(proof, &VERIFYINGKEY_DEPOSIT2, inputs_arr)?;
 
     msg!("Double leaf deposit proof succesfully verified");
 
@@ -340,7 +340,7 @@ pub fn verify_single_deposit_proof(
         .expect("Error converting type");
 
     let inputs_arr: &[[u8; 32]; 2] = &[secret_be, leaf1];
-    let _ = proof_verification(proof, &VERIFYINGKEY_DEPOSIT1, inputs_arr);
+    proof_verification(proof, &VERIFYINGKEY_DEPOSIT1, inputs_arr)?;
 
     msg!("Proof single leaf deposit proof succesfully verified");
 
@@ -365,7 +365,7 @@ pub fn verify_combine_proof(
         .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 4] = &[n1, n2, new_leaf, root];
 
-    let _ = proof_verification(proof, &COMBINE2TO1_VERIFYINGKEY, inputs_arr);
+    proof_verification(proof, &COMBINE2TO1_VERIFYINGKEY, inputs_arr)?;
 
     msg!("Combine proof successfully verified");
 
@@ -391,7 +391,7 @@ pub fn verify_one_null_two_leaves(
         .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 4] = &[n1, leaf1, leaf2, root];
 
-    let _ = proof_verification(proof, &COMBINE1TO2_VERIFYINGKEY, inputs_arr);
+    proof_verification(proof, &COMBINE1TO2_VERIFYINGKEY, inputs_arr)?;
 
     msg!("Combine proof successfully verified");
 
@@ -420,7 +420,7 @@ pub fn verify_two_null_two_leaves(
         .expect("Failed converting");
     let inputs_arr: &[[u8; 32]; 5] = &[n1, n2, leaf1, leaf2, root];
 
-    let _ = proof_verification(proof, &COMBINE2TO2_VERIFYINGKEY, inputs_arr);
+    proof_verification(proof, &COMBINE2TO2_VERIFYINGKEY, inputs_arr)?;
 
     msg!("Combine proof successfully verified");
 
@@ -428,12 +428,26 @@ pub fn verify_two_null_two_leaves(
     Ok((n1, n2, leaf1, leaf2, root))
 }
 
-/// Unpacks & verifies a single‐leaf Merkle‐inclusion proof for withdrawal.
-/// Expects `public_inputs = secret_be || nullifier_hash_be || root_be`, each 32 bytes.
+/// Packed V2 public inputs: nullifier(32), asset(32), amount(8),
+/// change leaf(32; zero for a full withdrawal), root(32), recipient(32),
+/// recipient binding(32).
+fn recipient_signals(public_inputs: &[u8]) -> Result<([u8; 32], [u8; 32], [u8; 32])> {
+    require!(public_inputs.len() == 200, ErrorCode::InvalidArgument);
+    let mut lo = [0u8; 32];
+    let mut hi = [0u8; 32];
+    lo[16..].copy_from_slice(&public_inputs[136..152]);
+    hi[16..].copy_from_slice(&public_inputs[152..168]);
+    let binding = public_inputs[168..200]
+        .try_into()
+        .map_err(|_| ErrorCode::InvalidArgument)?;
+    Ok((lo, hi, binding))
+}
+
 pub fn verify_withdraw_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
-) -> Result<([u8; 8], [u8; 32], [u8; 32])> {
+) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
+    let (recipient_lo, recipient_hi, recipient_binding) = recipient_signals(public_inputs)?;
     // let secret_be: [u8; 32] = Fr::from(8u64)
     //     .0
     //     .to_bytes_be()
@@ -447,7 +461,9 @@ pub fn verify_withdraw_proof(
     let asset_id: [u8; 32] = public_inputs[32..64].try_into().expect("Failed");
     let val_be8: [u8; 8] = public_inputs[64..72].try_into().expect("Failed");
     val_be[32 - 8..].copy_from_slice(&val_be8);
-    let root: [u8; 32] = public_inputs[72..104].try_into().expect("Failed");
+    let root: [u8; 32] = public_inputs[104..136].try_into().expect("Failed");
+    let recipient: [u8; 32] = public_inputs[136..168].try_into().expect("Failed");
+    require!(public_inputs[72..104].iter().all(|b| *b == 0), ErrorCode::InvalidArgument);
 
     //For SOL this must be 0.
     for i in asset_id {
@@ -456,26 +472,33 @@ pub fn verify_withdraw_proof(
         }
     }
 
-    let inputs_arr: &[[u8; 32]; 4] = &[val_be, asset_id, null, root];
+    // Circom's public signal order follows signal declaration order in this circuit.
+    let inputs_arr: &[[u8; 32]; 7] = &[
+        val_be, null, asset_id, root, recipient_lo, recipient_hi, recipient_binding,
+    ];
 
-    let _ = proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr);
+    proof_verification(proof, &WITHDRAW_VAR_VK, inputs_arr)?;
 
-    Ok((val_be8, null, root))
+    Ok((val_be8, null, root, recipient))
 }
 
 pub fn verify_withdraw_and_add_proof(
     proof: &[u8; 256],
     public_inputs: &[u8],
-) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
+) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
+    let (recipient_lo, recipient_hi, recipient_binding) = recipient_signals(public_inputs)?;
     let mut val_be = [0u8; 32];
-    let val_be8: [u8; 8] = public_inputs[96..104].try_into().expect("Failed");
+    let val_be8: [u8; 8] = public_inputs[64..72].try_into().expect("Failed");
     // copy your 8 bytes into the *right* end of the 32-byte buffer
     val_be[32 - 8..].copy_from_slice(&val_be8);
     let null: [u8; 32] = public_inputs[0..32].try_into().expect("Failed");
     let asset_id: [u8; 32] = public_inputs[32..64].try_into().expect("Failed");
-    let root = public_inputs[64..96].try_into().expect("Failed");
-    let new_leaf: [u8; 32] = public_inputs[104..136].try_into().expect("Failed");
-    let inputs_arr: &[[u8; 32]; 5] = &[val_be, asset_id, null, new_leaf, root];
+    let root: [u8; 32] = public_inputs[104..136].try_into().expect("Failed");
+    let new_leaf: [u8; 32] = public_inputs[72..104].try_into().expect("Failed");
+    let recipient: [u8; 32] = public_inputs[136..168].try_into().expect("Failed");
+    let inputs_arr: &[[u8; 32]; 8] = &[
+        null, asset_id, root, recipient_lo, recipient_hi, recipient_binding, val_be, new_leaf,
+    ];
     //For SOL this must be 0.
     for i in asset_id {
         if i != 0 {
@@ -484,18 +507,18 @@ pub fn verify_withdraw_and_add_proof(
     }
     msg!(" asset_id, val_be8, null, root, new_leaf {:?}\n, {:?}\n, {:?}\n, {:?}\n, {:?}\n", asset_id, val_be8, null, root, new_leaf);
     msg!("inpust arr: {:?}", inputs_arr);
-    let _ = proof_verification(proof, &WITHDRAW_AND_ADD_VERIFYINGKEY, inputs_arr);
+    proof_verification(proof, &WITHDRAW_AND_ADD_VERIFYINGKEY, inputs_arr)?;
     msg!("Verification for withdraw and add leaf succeded");
-    Ok((val_be8, null, root, new_leaf))
+    Ok((val_be8, null, root, new_leaf, recipient))
 }
 
 pub fn verify_withdraw_on_behalf(
     proof: &[u8; 256],
     public_inputs: &[u8],
 ) -> Result<([u8; 8], [u8; 32], [u8; 32], [u8; 32])> {
-    // Validate input length: nullifier(32) + amount(8) + root(32) + withdrawer_pubkey(32) = 104 bytes
-    if public_inputs.len() != 104 {
-        msg!("Invalid public inputs length: {} (expected 104)", public_inputs.len());
+    // Nullifier(32), amount(8), root(32), recipient(32), binding(32).
+    if public_inputs.len() != 136 {
+        msg!("Invalid public inputs length: {} (expected 136)", public_inputs.len());
         return Err(ErrorCode::InvalidArgument.into());
     }
 
@@ -514,9 +537,18 @@ pub fn verify_withdraw_on_behalf(
     // copy your 8 bytes into the *right* end of the 32-byte buffer
     amount_be[32 - 8..].copy_from_slice(&amount_be8);
 
-    let inputs_arr: &[[u8; 32]; 4] = &[amount_be, null, withdrawer_bytes, root];
+    let mut recipient_lo = [0u8; 32];
+    let mut recipient_hi = [0u8; 32];
+    recipient_lo[16..].copy_from_slice(&withdrawer_bytes[..16]);
+    recipient_hi[16..].copy_from_slice(&withdrawer_bytes[16..]);
+    let recipient_binding: [u8; 32] = public_inputs[104..136]
+        .try_into()
+        .map_err(|_| ErrorCode::InvalidArgument)?;
+    let inputs_arr: &[[u8; 32]; 6] = &[
+        amount_be, null, root, recipient_lo, recipient_hi, recipient_binding,
+    ];
 
-    let _ = proof_verification(proof, &WITHDRAW_ON_BEHALF_VK, inputs_arr);
+    proof_verification(proof, &WITHDRAW_ON_BEHALF_VK, inputs_arr)?;
 
     Ok((amount_be8, null, withdrawer_bytes, root))
 }
@@ -530,10 +562,13 @@ fn proof_verification<const N: usize>(
     // Deserialize πA with endianness fix
     let proof_a: G1 =
         <G1 as FromBytes>::read(&*[&change_endianness(&proof[0..64])[..], &[0u8][..]].concat())
-            .unwrap();
+            .map_err(|_| ErrorCode::InvalidProof)?;
     let mut proof_a_neg = [0u8; 65];
-    <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..]).unwrap();
-    let proof_a: [u8; 64] = change_endianness(&proof_a_neg[..64]).try_into().unwrap();
+    <G1 as ToBytes>::write(&proof_a.neg(), &mut proof_a_neg[..])
+        .map_err(|_| ErrorCode::InvalidProof)?;
+    let proof_a: [u8; 64] = change_endianness(&proof_a_neg[..64])
+        .try_into()
+        .map_err(|_| ErrorCode::InvalidProof)?;
 
     // πB and πC come directly
     let proof_b: [u8; 128] = proof[64..192].try_into().unwrap();
@@ -655,4 +690,37 @@ pub fn enforce_nullifier_shard_memo(
         require!(found, ErrorCode::InvalidNullifierShardMemo);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+
+    #[test]
+    fn v2_withdrawal_proofs_bind_recipient_and_reject_tampering() {
+        let full = include_bytes!("../tests/fixtures/WithdrawVariable.bin");
+        let proof: [u8; 256] = full[..256].try_into().unwrap();
+        let inputs = &full[256..];
+        assert!(verify_withdraw_proof(&proof, inputs).is_ok());
+        let mut changed_recipient = inputs.to_vec();
+        changed_recipient[167] ^= 1;
+        assert!(verify_withdraw_proof(&proof, &changed_recipient).is_err());
+        let mut changed_amount = inputs.to_vec();
+        changed_amount[71] ^= 1;
+        assert!(verify_withdraw_proof(&proof, &changed_amount).is_err());
+
+        let change = include_bytes!("../tests/fixtures/WithdrawAndAdd.bin");
+        let change_proof: [u8; 256] = change[..256].try_into().unwrap();
+        assert!(verify_withdraw_and_add_proof(&change_proof, &change[256..]).is_ok());
+        let mut changed_leaf = change[256..].to_vec();
+        changed_leaf[103] ^= 1;
+        assert!(verify_withdraw_and_add_proof(&change_proof, &changed_leaf).is_err());
+
+        let relayed = include_bytes!("../tests/fixtures/WithdrawOnBehalf.bin");
+        let relayed_proof: [u8; 256] = relayed[..256].try_into().unwrap();
+        assert!(verify_withdraw_on_behalf(&relayed_proof, &relayed[256..]).is_ok());
+        let mut changed_recipient = relayed[256..].to_vec();
+        changed_recipient[103] ^= 1;
+        assert!(verify_withdraw_on_behalf(&relayed_proof, &changed_recipient).is_err());
+    }
 }
