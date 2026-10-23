@@ -1,7 +1,9 @@
 
+## Colosseum Eterbal Hackathon Finalist June 2026
+
 # LeafPay 
 
-Welcome to the LeafPay App docs! Below you'll find:
+These docs serve as a simple explainer as to how LeafPay works under the hood.
 
 - On-chain Merkle Mountain Range architecture  
 - Leaf parsing via Base64 memos  
